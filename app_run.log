@@ -1,12 +1,12 @@
 nohup: ignoring input
 Migration marker present; skipping migration
-DB_FILE = /home/panagiotis/PycharmProjects/IoT-Babar-Scuba-Diving-AQI/instance/iot_data.db
-abs path = /home/panagiotis/PycharmProjects/IoT-Babar-Scuba-Diving-AQI/instance/iot_data.db
+DB_FILE = /home/panagiotis/PycharmProjects/IoT-Hydra-Scuba-Diving-AQI/instance/iot_data.db
+abs path = /home/panagiotis/PycharmProjects/IoT-Hydra-Scuba-Diving-AQI/instance/iot_data.db
 exists = True
 dir exists = True dir perms = 0o775
 file perms = 0o664
-SQLALCHEMY_DATABASE_URI = sqlite:////home/panagiotis/PycharmProjects/IoT-Babar-Scuba-Diving-AQI/instance/iot_data.db
-db.engine.url = sqlite:////home/panagiotis/PycharmProjects/IoT-Babar-Scuba-Diving-AQI/instance/iot_data.db
+SQLALCHEMY_DATABASE_URI = sqlite:////home/panagiotis/PycharmProjects/IoT-Hydra-Scuba-Diving-AQI/instance/iot_data.db
+db.engine.url = sqlite:////home/panagiotis/PycharmProjects/IoT-Hydra-Scuba-Diving-AQI/instance/iot_data.db
  * Serving Flask app 'app'
  * Debug mode: off
 /usr/local/lib/python3.8/dist-packages/flask_limiter/extension.py:333: UserWarning: Using the in-memory storage for tracking rate limits as no storage was explicitly specified. This is not recommended for production use. See: https://flask-limiter.readthedocs.io#configuring-a-storage-backend for documentation about configuring the storage backend.

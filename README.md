@@ -1,14 +1,14 @@
-Scuba Diving Air Quality Monitoring System – IoT Babar
+Scuba Diving Air Quality Monitoring System – IoT Hydra
 
 Overview
-This project monitors air quality using a combination of MQ gas sensors and a GP2Y1014AU dust sensor to detect potential contamination in diving tanks filled from compressors. By calculating a standard Air Quality Index (AQI) and a specialized Scuba Diving Air Quality Index (SD-AQI), the system identifies harmful gases that could pose risks to divers. IoT Babar, an IoT-based dashboard built using Flask, provides real-time graphing, monitoring, and sensor data analysis.
+This project monitors air quality using a combination of MQ gas sensors and a GP2Y1014AU dust sensor to detect potential contamination in diving tanks filled from compressors. By calculating a standard Air Quality Index (AQI) and a specialized Scuba Diving Air Quality Index (SD-AQI), the system identifies harmful gases that could pose risks to divers. IoT Hydra, an IoT-based dashboard built using Flask, provides real-time graphing, monitoring, and sensor data analysis.
 
 System Architecture
 The project comprises hardware sensors, communication modules, data processing, and a web-based IoT dashboard for visualization.
 
 Hardware Components
 Gas Sensors:
-# IoT Babar — Scuba Diving Air Quality Monitoring
+# IoT Hydra — Scuba Diving Air Quality Monitoring
 
 A compact, local IoT platform for monitoring air quality in scuba diving compressors and cylinders. The system combines multiple MOS (MQ) gas sensors, a particulate (dust) sensor, and environmental sensors. Data is collected on Arduino-based devices and sent to a Flask backend for storage, visualization and evaluation (SD-AQI).
 

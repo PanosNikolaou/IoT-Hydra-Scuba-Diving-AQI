@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple SQLite migration script for IoT-Babar-Scuba-Diving-AQI
+Simple SQLite migration script for IoT-Hydra-Scuba-Diving-AQI
 
 This script will:
 - Back up the existing `iot_data.db` to `iot_data.db.bak` (only if the DB exists)

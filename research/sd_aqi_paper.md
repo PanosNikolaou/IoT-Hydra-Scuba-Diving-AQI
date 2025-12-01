@@ -1,6 +1,6 @@
 # The Scuba-Diving Air Quality Index (SD-AQI): Definition, Validation, and Application
 
-Authors: IoT Babar Team
+Authors: IoT Hydra Team
 Date: 2025-12-01
 
 Abstract
@@ -186,4 +186,4 @@ SD-AQI provides a compact, sensor-driven indicator for compressor-site air quali
 - Relevant diving safety standards (local regulatory references).
 
 
-*Repository: IoT-Babar-Scuba-Diving-AQI*
+*Repository: IoT-Hydra-Scuba-Diving-AQI*

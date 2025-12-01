@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/iot-babar.iml" filepath="$PROJECT_DIR$/.idea/iot-babar.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/iot-hydra.iml" filepath="$PROJECT_DIR$/.idea/iot-hydra.iml" />
     </modules>
   </component>
 </project>
