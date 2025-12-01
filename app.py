@@ -2,6 +2,42 @@ import time
 import threading
 import os
 from datetime import datetime, timezone, timedelta
+try:
+    # Python 3.9+: zoneinfo is preferred
+    from zoneinfo import ZoneInfo
+    _ATHENS_TZ = ZoneInfo('Europe/Athens')
+except Exception:
+    # Fallback: try dateutil (commonly installed via pandas)
+    try:
+        from dateutil import tz as _dz
+        _ATHENS_TZ = _dz.gettz('Europe/Athens')
+    except Exception:
+        # Last-resort: fixed offset of +02:00 (works for winter; DST not handled)
+        _ATHENS_TZ = timezone(timedelta(hours=2))
+        # (no per-branch to_athens_iso here; define a single helper below)
+        pass
+
+# Module-level helper to convert datetimes to Europe/Athens ISO strings.
+def to_athens_iso(dt):
+    """Convert a datetime (naive or aware) to an ISO string in Europe/Athens timezone.
+
+    Returns None if dt is falsy or cannot be converted.
+    """
+    if not dt:
+        return None
+    try:
+        # If dt has no tzinfo, assume it is UTC (existing DB rows are stored as naive UTC)
+        if getattr(dt, 'tzinfo', None) is None:
+            aware = dt.replace(tzinfo=timezone.utc)
+        else:
+            # Normalize to UTC first to avoid issues
+            aware = dt.astimezone(timezone.utc)
+        return aware.astimezone(_ATHENS_TZ).isoformat()
+    except Exception:
+        try:
+            return dt.isoformat()
+        except Exception:
+            return None
 from uuid import uuid4
 import traceback
 
@@ -304,6 +340,12 @@ def receive_data():
         if not data:
             return jsonify({"status": "error", "message": "No JSON data received"}), 400
 
+        # Lightweight ingestion logging to help diagnose device connectivity
+        try:
+            app.logger.info('ingest POST received keys=%s', list(data.keys()) if isinstance(data, dict) else str(type(data)))
+        except Exception:
+            pass
+
         # If the payload includes a 'timestamp' field (ISO string) or epoch ms, try to parse it
         parsed_ts = None
         if isinstance(data, dict):
@@ -357,8 +399,10 @@ def receive_data():
                             parsed_dt = now
                         # store as naive UTC (consistent with existing DB rows)
                         parsed_ts = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
-                    else:
-                        parsed_ts = None
+                    try:
+                        app.logger.info('ingest parsed_ts=%s', parsed_ts)
+                    except Exception:
+                        pass
                 except Exception:
                     parsed_ts = None
 
@@ -419,6 +463,10 @@ def receive_data():
 
         db.session.commit()
 
+        try:
+            app.logger.info('ingest saved mq row uuid=%s', mq_kwargs.get('uuid'))
+        except Exception:
+            pass
         return jsonify({"status": "success", "message": "Data saved"}), 200
     except Exception as e:
         print("Error:", str(e))
@@ -440,8 +488,11 @@ def get_data():
         mq_records = mq_pagination.items
 
         # Format data for JSON response, skipping records where all values are 0
+        # use module-level helper
+        _to_athens_iso = to_athens_iso
+
         general_data = [{
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "timestamp": _to_athens_iso(r.timestamp) if r.timestamp else None,
             "uuid": getattr(r, 'uuid', None) if getattr(r, 'uuid', None) is not None else None,
             "dust": r.dust if r.dust is not None else 0,
             "pm2_5": r.pm2_5 if r.pm2_5 is not None else 0,
@@ -452,7 +503,7 @@ def get_data():
             "uuid": getattr(r, 'uuid', None) if getattr(r, 'uuid', None) is not None else None,
             "sd_aqi": getattr(r, 'sd_aqi', None),
             "sd_aqi_level": getattr(r, 'sd_aqi_level', None),
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "timestamp": _to_athens_iso(r.timestamp) if r.timestamp else None,
             "LPG": r.lpg if r.lpg is not None else 0,
             "CO": r.co if r.co is not None else 0,
             "Smoke": r.smoke if r.smoke is not None else 0,
@@ -470,10 +521,15 @@ def get_data():
             "humidity": r.humidity if r.humidity is not None else 0
         } for r in mq_records]
 
+        # Use Athens local time for the server_now so the frontend sees Greek time everywhere
+        try:
+            server_now = datetime.now(timezone.utc).astimezone(_ATHENS_TZ).isoformat()
+        except Exception:
+            server_now = datetime.now(timezone.utc).isoformat()
         return jsonify({
             "general_data": general_data,
             "mq_data": mq_data,
-            "server_now": datetime.now(timezone.utc).isoformat(),
+            "server_now": server_now,
             "general_total": len(general_data),       # Total valid records for general sensor data
             "mq_total": mq_pagination.total,         # Total records for MQ sensor data
             "page": pagination.page,                 # Current page
@@ -528,12 +584,18 @@ def get_mq_data():
         # rows (limit to a reasonable number) and let the frontend handle
         # missing values.
         mq_records = MQSensorData.query.order_by(MQSensorData.timestamp.desc()).limit(200).all()
+        try:
+            app.logger.info('get_mq_data: found %d records', len(mq_records))
+            if len(mq_records) > 0:
+                app.logger.info('get_mq_data first rec timestamp (raw DB)=%r', getattr(mq_records[0], 'timestamp', None))
+        except Exception:
+            pass
 
         mq_data = [{
             "uuid": r.uuid if r.uuid is not None else None,
             "sd_aqi": getattr(r, 'sd_aqi', None),
             "sd_aqi_level": getattr(r, 'sd_aqi_level', None),
-            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "timestamp": to_athens_iso(r.timestamp) if r.timestamp else None,
             "temperature": r.temperature,
             "humidity": r.humidity,
             "LPG": r.lpg,
@@ -551,7 +613,15 @@ def get_mq_data():
             "Air": r.air
         } for r in mq_records]
 
-        return jsonify({"mq_data": mq_data, "server_now": datetime.now(timezone.utc).isoformat()}), 200
+        try:
+            server_now = datetime.now(timezone.utc).astimezone(_ATHENS_TZ).isoformat()
+        except Exception:
+            server_now = datetime.now(timezone.utc).isoformat()
+        try:
+            app.logger.info('get_mq_data returning server_now=%s first_mq_ts=%s', server_now, mq_data[0]['timestamp'] if mq_data and len(mq_data)>0 else None)
+        except Exception:
+            pass
+        return jsonify({"mq_data": mq_data, "server_now": server_now}), 200
     except OperationalError as oe:
         # Try running migration + disposing engine/session and retry once
         try:
@@ -573,7 +643,7 @@ def get_mq_data():
                     "uuid": r.uuid if r.uuid is not None else None,
                     "sd_aqi": getattr(r, 'sd_aqi', None),
                     "sd_aqi_level": getattr(r, 'sd_aqi_level', None),
-                    "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                    "timestamp": to_athens_iso(r.timestamp) if r.timestamp else None,
                     "temperature": r.temperature,
                     "humidity": r.humidity,
                     "LPG": r.lpg,
@@ -590,7 +660,11 @@ def get_mq_data():
                     "H2": r.h2,
                     "Air": r.air
                 } for r in mq_records]
-                return jsonify({"mq_data": mq_data, "server_now": datetime.now(timezone.utc).isoformat()}), 200
+                try:
+                    server_now = datetime.now(timezone.utc).astimezone(_ATHENS_TZ).isoformat()
+                except Exception:
+                    server_now = datetime.now(timezone.utc).isoformat()
+                return jsonify({"mq_data": mq_data, "server_now": server_now}), 200
         except Exception:
             pass
         print("Error:", str(oe))

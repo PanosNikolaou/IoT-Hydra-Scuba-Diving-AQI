@@ -226,9 +226,10 @@ async function fetchMqData() {
                         const localDisp = new Date().toLocaleString();
                         // Show server time with local timezone name to avoid confusion
                         // (so users see the server time converted into their locale).
-                        const serverNowPretty = serverNowDisp ? new Date(serverNowDisp).toLocaleString(undefined, { timeZoneName: 'short' }) : null;
-                        const latestPretty = latestDisp ? new Date(latestDisp).toLocaleString(undefined, { timeZoneName: 'short' }) : null;
-                        const localPretty = new Date().toLocaleString(undefined, { timeZoneName: 'short' });
+                        const tzOpts = { timeZone: 'Europe/Athens', timeZoneName: 'short' };
+                        const serverNowPretty = serverNowDisp ? new Date(serverNowDisp).toLocaleString(undefined, tzOpts) : null;
+                        const latestPretty = latestDisp ? new Date(latestDisp).toLocaleString(undefined, tzOpts) : null;
+                        const localPretty = new Date().toLocaleString(undefined, tzOpts);
                         if (serverNowPretty && latestPretty) el.innerText = `Server: ${serverNowPretty} (latest data: ${latestPretty}) | Local: ${localPretty}`;
                         else if (serverNowPretty) el.innerText = `Server: ${serverNowPretty} | Local: ${localPretty}`;
                         else if (latestPretty) el.innerText = `Server: ${latestPretty} | Local: ${localPretty}`;
@@ -1031,9 +1032,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const latestDisp = (lastFilteredData && lastFilteredData.length > 0 && lastFilteredData[0].timestamp) ? parseServerTimestamp(lastFilteredData[0].timestamp).toLocaleString() : null;
             const localDisp = new Date().toLocaleString();
             // show with timezone name
-            const serverPretty = serverNowDisp ? new Date(serverNowDisp).toLocaleString(undefined, { timeZoneName: 'short' }) : null;
-            const latestPretty = latestDisp ? new Date(latestDisp).toLocaleString(undefined, { timeZoneName: 'short' }) : null;
-            const localPretty = new Date().toLocaleString(undefined, { timeZoneName: 'short' });
+            const tzOpts = { timeZone: 'Europe/Athens', timeZoneName: 'short' };
+            const serverPretty = serverNowDisp ? new Date(serverNowDisp).toLocaleString(undefined, tzOpts) : null;
+            const latestPretty = latestDisp ? new Date(latestDisp).toLocaleString(undefined, tzOpts) : null;
+            const localPretty = new Date().toLocaleString(undefined, tzOpts);
             if (serverPretty && latestPretty) el.innerText = `Server: ${serverPretty} (latest data: ${latestPretty}) | Local: ${localPretty}`;
             else if (serverPretty) el.innerText = `Server: ${serverPretty} | Local: ${localPretty}`;
             else if (latestPretty) el.innerText = `Server: ${latestPretty} | Local: ${localPretty}`;
@@ -1083,3 +1085,92 @@ function computeAndRenderAnalysis(data) {
         container.appendChild(card);
     });
 }
+
+// -------------------------
+// XBee debug UI helpers
+// -------------------------
+let xbeeAutoRefreshTimer = null;
+async function fetchXbeeStatus() {
+    try {
+        const res = await fetch('/_debug/xbee-status');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        // Update port/baud
+        try { document.getElementById('xbee-port').innerText = j.port || '-'; } catch (e) {}
+        try { document.getElementById('xbee-baud').innerText = j.baud || '-'; } catch (e) {}
+        try { document.getElementById('xbee-last-update').innerText = (new Date()).toLocaleString(); } catch (e) {}
+        // recent_raw may be an array of strings
+        const recent = Array.isArray(j.recent_raw) ? j.recent_raw : [];
+        const list = document.getElementById('xbee-recent-list');
+        if (!list) return;
+        list.innerHTML = '';
+        if (recent.length === 0) {
+            const li = document.createElement('li');
+            li.className = 'list-group-item';
+            li.innerText = '(no recent messages)';
+            list.appendChild(li);
+            return;
+        }
+        // Show newest-first to be consistent with other UI parts
+        for (let i = recent.length - 1; i >= 0; i--) {
+            const item = recent[i];
+            const li = document.createElement('li');
+            li.className = 'list-group-item';
+            // sanitize and show as monospace text
+            li.innerText = String(item);
+            list.appendChild(li);
+        }
+    } catch (err) {
+        console.warn('fetchXbeeStatus failed', err);
+        const list = document.getElementById('xbee-recent-list');
+        if (list) {
+            list.innerHTML = '';
+            const li = document.createElement('li');
+            li.className = 'list-group-item text-danger';
+            li.innerText = 'Failed to contact /_debug/xbee-status: ' + err.message;
+            list.appendChild(li);
+        }
+    }
+}
+
+// Wire modal events and buttons when DOM ready
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        const xbeeModalEl = document.getElementById('xbeeDebugModal');
+        if (xbeeModalEl) {
+            xbeeModalEl.addEventListener('show.bs.modal', (e) => {
+                // fetch once on show
+                fetchXbeeStatus();
+            });
+            xbeeModalEl.addEventListener('shown.bs.modal', (e) => {
+                // start auto-refresh if checkbox is checked
+                const auto = document.getElementById('xbee-auto-refresh');
+                if (auto && auto.checked) {
+                    if (xbeeAutoRefreshTimer) clearInterval(xbeeAutoRefreshTimer);
+                    xbeeAutoRefreshTimer = setInterval(fetchXbeeStatus, 1500);
+                }
+            });
+            xbeeModalEl.addEventListener('hide.bs.modal', (e) => {
+                if (xbeeAutoRefreshTimer) { clearInterval(xbeeAutoRefreshTimer); xbeeAutoRefreshTimer = null; }
+            });
+        }
+
+        const refreshBtn = document.getElementById('xbee-refresh-btn');
+        if (refreshBtn) refreshBtn.addEventListener('click', (e) => { fetchXbeeStatus(); });
+
+        const clearBtn = document.getElementById('xbee-clear-btn');
+        if (clearBtn) clearBtn.addEventListener('click', (e) => { const list = document.getElementById('xbee-recent-list'); if (list) list.innerHTML = ''; document.getElementById('xbee-last-update').innerText = '-'; });
+
+        const autoCb = document.getElementById('xbee-auto-refresh');
+        if (autoCb) {
+            autoCb.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    if (xbeeAutoRefreshTimer) clearInterval(xbeeAutoRefreshTimer);
+                    xbeeAutoRefreshTimer = setInterval(fetchXbeeStatus, 1500);
+                } else {
+                    if (xbeeAutoRefreshTimer) { clearInterval(xbeeAutoRefreshTimer); xbeeAutoRefreshTimer = null; }
+                }
+            });
+        }
+    } catch (e) { console.warn('xbee debug init failed', e); }
+});

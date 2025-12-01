@@ -34,12 +34,6 @@ wget-log
 
 # Project-specific sensitive or large folders
 instance/
-arduino_codes/
-research/
-scripts/
-SD-AQI-v1/
-static/
-templates/
 
 # Database/backups
 instance/*.db*

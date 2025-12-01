@@ -218,6 +218,7 @@
                             <div class="d-flex align-items-center">
                                     <button id="poll-toggle" class="btn btn-sm btn-success me-2">Pause</button>
                                     <button id="refresh-now" class="btn btn-sm btn-outline-info me-2">Refresh Now</button>
+                                    <button id="open-xbee-debug" class="btn btn-sm btn-outline-secondary me-2" data-bs-toggle="modal" data-bs-target="#xbeeDebugModal">XBee Debug</button>
                                 <label class="me-2">Interval (ms)</label>
                                 <input id="poll-interval" type="number" class="form-control form-control-sm" value="1000" min="200" style="width:110px">
                             </div>
@@ -316,6 +317,40 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- XBee Debug Modal -->
+<div class="modal fade" id="xbeeDebugModal" tabindex="-1" aria-labelledby="xbeeDebugModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="xbeeDebugModalLabel">XBee Debug — Recent Raw Messages</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div>
+                        <strong>Port:</strong> <span id="xbee-port">-</span>
+                        &nbsp;&nbsp;<strong>Baud:</strong> <span id="xbee-baud">-</span>
+                    </div>
+                    <div>
+                        <button id="xbee-refresh-btn" class="btn btn-sm btn-outline-primary">Refresh</button>
+                        <label class="form-check form-check-inline ms-2">
+                            <input id="xbee-auto-refresh" class="form-check-input" type="checkbox"> <small>Auto-refresh</small>
+                        </label>
+                    </div>
+                </div>
+                <div class="mb-2 small text-muted">Last update: <span id="xbee-last-update">-</span></div>
+                <div>
+                    <ul id="xbee-recent-list" class="list-group" style="font-family:monospace; white-space:pre-wrap;"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                <button id="xbee-clear-btn" type="button" class="btn btn-danger">Clear List</button>
             </div>
         </div>
     </div>
