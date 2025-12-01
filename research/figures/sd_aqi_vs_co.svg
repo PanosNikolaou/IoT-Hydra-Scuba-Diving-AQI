@@ -1,0 +1,34 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='640' height='240' viewBox='0 0 640 240'>
+  <rect width='100%' height='100%' fill='#ffffff'/>
+  <g transform='translate(48,16)'>
+    <rect width='544' height='192' fill='none' />
+    <!-- axes -->
+    <line x1='0' y1='0' x2='0' y2='192' stroke='#000' stroke-width='1'/>
+    <line x1='0' y1='192' x2='544' y2='192' stroke='#000' stroke-width='1'/>
+    <!-- labels -->
+    <text x='272' y='220' font-family='Arial' font-size='12' text-anchor='middle'>CO (a.u.)</text>
+    <text x='-36' y='96' transform='rotate(-90 -36,96)' font-family='Arial' font-size='12' text-anchor='middle'>SD-AQI</text>
+    <!-- grid and ticks -->
+    <!-- simple plotted curve -->
+    <polyline fill='none' stroke='#d9534f' stroke-width='2' points='
+      0,192
+      34,180
+      68,160
+      102,140
+      136,124
+      170,110
+      204,96
+      238,86
+      272,76
+      306,68
+      340,60
+      374,54
+      408,48
+      442,42
+      476,38
+      510,34
+      544,30
+    '/>
+    <text x='420' y='20' font-family='Arial' font-size='14' fill='#333'>SD-AQI vs CO (illustrative)</text>
+  </g>
+</svg>
