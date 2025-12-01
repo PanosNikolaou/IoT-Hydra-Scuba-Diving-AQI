@@ -522,23 +522,12 @@ def mq_data():
 @app.route("/api/mq-data", methods=["GET"])
 def get_mq_data():
     try:
-        mq_records = MQSensorData.query.filter(
-            MQSensorData.lpg.isnot(None),
-            MQSensorData.co.isnot(None),
-            MQSensorData.smoke.isnot(None),
-            MQSensorData.co_mq7.isnot(None),
-            MQSensorData.ch4.isnot(None),
-            MQSensorData.co_mq9.isnot(None),
-            MQSensorData.co2.isnot(None),
-            MQSensorData.nh3.isnot(None),
-            MQSensorData.nox.isnot(None),
-            MQSensorData.alcohol.isnot(None),
-            MQSensorData.benzene.isnot(None),
-            MQSensorData.h2.isnot(None),
-            MQSensorData.air.isnot(None),
-            MQSensorData.temperature.isnot(None),
-            MQSensorData.humidity.isnot(None)
-        ).order_by(MQSensorData.timestamp.desc()).all()
+        # Return recent MQ sensor records ordered by timestamp.
+        # Previously we filtered to only rows where every MQ column was not NULL,
+        # which caused valid partial records to be excluded. Return the latest
+        # rows (limit to a reasonable number) and let the frontend handle
+        # missing values.
+        mq_records = MQSensorData.query.order_by(MQSensorData.timestamp.desc()).limit(200).all()
 
         mq_data = [{
             "uuid": r.uuid if r.uuid is not None else None,
@@ -579,23 +568,7 @@ def get_mq_data():
                 except Exception:
                     pass
                 # retry
-                mq_records = MQSensorData.query.filter(
-                    MQSensorData.lpg.isnot(None),
-                    MQSensorData.co.isnot(None),
-                    MQSensorData.smoke.isnot(None),
-                    MQSensorData.co_mq7.isnot(None),
-                    MQSensorData.ch4.isnot(None),
-                    MQSensorData.co_mq9.isnot(None),
-                    MQSensorData.co2.isnot(None),
-                    MQSensorData.nh3.isnot(None),
-                    MQSensorData.nox.isnot(None),
-                    MQSensorData.alcohol.isnot(None),
-                    MQSensorData.benzene.isnot(None),
-                    MQSensorData.h2.isnot(None),
-                    MQSensorData.air.isnot(None),
-                    MQSensorData.temperature.isnot(None),
-                    MQSensorData.humidity.isnot(None)
-                ).order_by(MQSensorData.timestamp.desc()).all()
+                mq_records = MQSensorData.query.order_by(MQSensorData.timestamp.desc()).limit(200).all()
                 mq_data = [{
                     "uuid": r.uuid if r.uuid is not None else None,
                     "sd_aqi": getattr(r, 'sd_aqi', None),
