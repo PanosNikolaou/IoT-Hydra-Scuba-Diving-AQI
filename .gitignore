@@ -1,0 +1,60 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+
+# Byte-compiled / optimized / DLL files
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+venv/
+myenv/
+env/
+ENV/
+
+# IDEs and editors
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and runtime
+*.log
+*.pid
+app_run.log
+flask.pid
+kill_port
+wget-log
+
+# Project-specific sensitive or large folders
+instance/
+arduino_codes/
+research/
+scripts/
+SD-AQI-v1/
+static/
+templates/
+
+# Database/backups
+instance/*.db*
+
+# LaTeX artifacts
+*.aux
+*.log
+*.out
+*.pdf
+
+# Node / JS
+node_modules/
+package-lock.json
+npm-debug.log
+
+# Misc
+.migration_done
+
