@@ -1335,30 +1335,55 @@ function showToast(message, type) {
         const toastId = 'mq-toast-' + Date.now();
         const el = document.createElement('div');
         el.id = toastId;
-        el.style.position = 'fixed';
+        // use CSS classes for styling so different themes can be applied
+        el.className = 'mq-toast';
+        const variantClass = (typeof type === 'string') ? ('mq-toast--' + type) : '';
+        if (variantClass) el.classList.add(variantClass);
+        // build icon + message elements to avoid HTML injection
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'mq-toast__icon';
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'mq-toast__msg';
+        msgDiv.textContent = message;
+
+        // choose an inline SVG icon per variant (use currentColor for fill)
+        let iconSvg = '';
+        const t = (typeof type === 'string') ? type : '';
+        if (t === 'success') {
+            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M13.485 3.929a1 1 0 0 1 0 1.414l-7.07 7.071a1 1 0 0 1-1.415 0L2.515 9.91a1 1 0 1 1 1.414-1.414l1.486 1.486 6.363-6.364a1 1 0 0 1 1.207-.295z"/></svg>';
+        } else if (t === 'warning') {
+            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7.001 1.5a1 1 0 0 1 .998 0l6 3.464A1 1 0 0 1 15 6.366v3.268a1 1 0 0 1-.999.902l-6  .5a1 1 0 0 1-.999 0l-6-.5A1 1 0 0 1 1 9.634V6.366a1 1 0 0 1 .001-.902L7.001 1.5zM7.5 5a.5.5 0 0 0-1 0v3a.5.5 0 0 0 1 0V5zm0 5a.5.5 0 0 0-1 0v1a.5.5 0 0 0 1 0v-1z"/></svg>';
+        } else if (t === 'danger') {
+            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 1.333A6.667 6.667 0 1 0 8 14.667 6.667 6.667 0 0 0 8 1.333zm0 4a.667.667 0 0 1 .667.667v3.333A.667.667 0 0 1 8 10a.667.667 0 0 1-.667-.667V6A.667.667 0 0 1 8 5.333zM8 11.333a.667.667 0 1 1 0 1.333.667.667 0 0 1 0-1.333z"/></svg>';
+        } else {
+            // info / default
+            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm.93 4.588a.5.5 0 0 1-.858.514 1.5 1.5 0 1 0 0 2.796.5.5 0 1 1 .858.514A2.5 2.5 0 1 1 8 5.587zM8 11a.5.5 0 0 1 0 1 .5.5 0 0 1 0-1z"/></svg>';
+        }
+        iconSpan.innerHTML = iconSvg;
+        el.appendChild(iconSpan);
+        el.appendChild(msgDiv);
+        // compute stacking offset: place new toasts under existing ones
+        const existing = Array.from(document.querySelectorAll('.mq-toast'));
+        let offset = 20; // start from 20px from top
+        for (const t of existing) {
+            try {
+                const h = t.getBoundingClientRect().height || 56;
+                offset += Math.round(h) + 8; // gap between toasts
+            } catch (e) {
+                offset += 64;
+            }
+        }
+        el.style.top = offset + 'px';
         el.style.right = '20px';
-        el.style.top = '20px';
+        el.style.position = 'fixed';
         el.style.zIndex = 2000;
-        el.style.minWidth = '220px';
-        el.style.padding = '10px 14px';
-        el.style.borderRadius = '6px';
-        el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
-        el.style.color = '#fff';
-        el.style.fontSize = '13px';
-        el.style.opacity = '0';
-        el.style.transition = 'opacity 240ms ease, transform 240ms ease';
-        if (type === 'success') el.style.background = '#28a745';
-        else if (type === 'danger') el.style.background = '#dc3545';
-        else if (type === 'warning') el.style.background = '#ffc107';
-        else el.style.background = '#007bff';
-        el.innerText = message;
         document.body.appendChild(el);
-        // animate in
-        requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
+        // animate in using class
+        requestAnimationFrame(() => { el.classList.add('mq-toast--visible'); });
         // auto remove after 4s
         setTimeout(() => {
-            try { el.style.opacity = '0'; el.style.transform = 'translateY(-6px)'; } catch (e) {}
-            setTimeout(() => { try { document.body.removeChild(el); } catch (e) {} }, 300);
+            try { el.classList.remove('mq-toast--visible'); el.classList.add('mq-toast--hide'); } catch (e) {}
+            setTimeout(() => { try { document.body.removeChild(el); } catch (e) {} }, 360);
         }, 4000);
     } catch (e) { console.warn('showToast error', e); }
 }

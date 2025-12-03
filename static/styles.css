@@ -7,3 +7,37 @@ body {
 h1 {
     color: #333;
 }
+
+/* MQ toast notifications */
+.mq-toast {
+    min-width: 220px;
+    padding: 10px 14px;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    color: #fff;
+    font-size: 13px;
+    opacity: 0;
+    transform: translateY(-6px);
+    transition: opacity 240ms ease, transform 240ms ease;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.mq-toast--visible { opacity: 1; transform: translateY(0); }
+.mq-toast--hide { opacity: 0; transform: translateY(-6px); }
+
+/* Variants */
+.mq-toast--success { background: linear-gradient(180deg,#34d058,#28a745); }
+.mq-toast--info { background: linear-gradient(180deg,#4dabf7,#007bff); }
+.mq-toast--warning { background: linear-gradient(180deg,#ffd166,#ffc107); color:#222; }
+.mq-toast--danger { background: linear-gradient(180deg,#ff6b6b,#dc3545); }
+
+/* Make sure multiple toasts are readable on small screens */
+@media (max-width: 420px) {
+    .mq-toast { right: 8px; left: 8px; top: auto !important; }
+}
+
+/* icon inside toast */
+.mq-toast__icon { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; flex:0 0 20px; }
+.mq-toast__icon svg { width: 18px; height: 18px; display:block; }
+.mq-toast__msg { line-height:1.1; }
