@@ -20,9 +20,6 @@ BAUD_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'instance', 'xbee_bau
 recent_raw = deque(maxlen=32)
 FLASK_API_URL = "http://127.0.0.1:5000/api/data"
 QUEUE_PATH = os.path.join(os.path.dirname(__file__), 'instance', 'xbee_queue.jsonl')
-# Flush/POST timeouts and retry policy (configurable via env vars)
-FLUSH_REQUEST_TIMEOUT = float(os.getenv('XBEE_FLUSH_TIMEOUT', '10'))
-FLUSH_ATTEMPTS = int(os.getenv('XBEE_FLUSH_ATTEMPTS', '3'))
 
 # Ensure instance dir exists for queue file
 try:
@@ -217,7 +214,7 @@ def connect_xbee(retries=3, delay=2):
 
 def send_to_flask(data):
     try:
-        response = requests.post(FLASK_API_URL, json=data, timeout=FLUSH_REQUEST_TIMEOUT)
+        response = requests.post(FLASK_API_URL, json=data)
         if response.status_code == 200:
             logger.debug("Data successfully sent to Flask: %s", data)
         else:
@@ -267,31 +264,15 @@ def flush_queue():
             # corrupted line — skip
             logger.debug("Skipping malformed queued line")
             continue
-
-        success = False
-        attempt = 0
-        # Attempt multiple times with exponential backoff between attempts
-        while attempt < FLUSH_ATTEMPTS and not success:
-            attempt += 1
-            try:
-                timeout = FLUSH_REQUEST_TIMEOUT * (1 + (attempt - 1) * 0.5)
-                resp = requests.post(FLASK_API_URL, json=payload, timeout=timeout)
-                if resp.status_code == 200:
-                    logger.info("Flushed queued payload successfully (attempt %d)", attempt)
-                    success = True
-                    break
-                else:
-                    logger.warning("Flush attempt %d: server returned %s; will retry", attempt, resp.status_code)
-            except Exception as e:
-                logger.warning("Flush attempt %d: error communicating with Flask: %s", attempt, e)
-
-            # Backoff before next attempt (capped)
-            if not success and attempt < FLUSH_ATTEMPTS:
-                backoff = min(2 ** attempt, 8)
-                time.sleep(backoff)
-
-        if not success:
-            logger.info("Flush: requeueing payload after %d attempts", FLUSH_ATTEMPTS)
+        try:
+            resp = requests.post(FLASK_API_URL, json=payload, timeout=5)
+            if resp.status_code == 200:
+                logger.info("Flushed queued payload successfully")
+            else:
+                logger.warning("Flush: server returned %s; requeueing", resp.status_code)
+                remaining.append(ln)
+        except Exception as e:
+            logger.warning("Flush: error communicating with Flask: %s; will retry later", e)
             remaining.append(ln)
 
     # write remaining back

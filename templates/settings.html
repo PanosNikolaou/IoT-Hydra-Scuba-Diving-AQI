@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - IoT Hydra</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body class="bg-light">
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="#">IoT Dashboard</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav"
+                aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ms-auto">
+                <li class="nav-item"><a class="nav-link" href="/">PM Sensors</a></li>
+                <li class="nav-item"><a class="nav-link" href="/mq-data">MQ Sensors</a></li>
+                <li class="nav-item"><a class="nav-link" href="/evaluation">Evaluation</a></li>
+                <li class="nav-item"><a class="nav-link active" href="/settings">Settings</a></li>
+            </ul>
+        </div>
+    </div>
+</nav>
+
+<div class="container mt-4">
+    <h1 class="mb-3">Settings</h1>
+
+    <div class="card mb-4">
+        <div class="card-header">Toast Notifications</div>
+        <div class="card-body">
+            <form id="toast-settings-form">
+                <div class="row mb-3">
+                    <div class="col-md-4">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="toast-enable">
+                            <label class="form-check-label" for="toast-enable">Enable toasts</label>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="toast-duration" class="form-label">Default duration (ms)</label>
+                        <input type="number" id="toast-duration" class="form-control" min="500" step="100">
+                    </div>
+                    <div class="col-md-4">
+                        <label for="toast-position" class="form-label">Position</label>
+                        <select id="toast-position" class="form-select">
+                            <option value="top-right">Top Right</option>
+                            <option value="top-left">Top Left</option>
+                            <option value="bottom-right">Bottom Right</option>
+                            <option value="bottom-left">Bottom Left</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Enabled types</label>
+                    <div class="d-flex gap-3">
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="toast-type-success">
+                            <label class="form-check-label" for="toast-type-success">Success</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="toast-type-info">
+                            <label class="form-check-label" for="toast-type-info">Info</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="toast-type-warning">
+                            <label class="form-check-label" for="toast-type-warning">Warning</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="toast-type-danger">
+                            <label class="form-check-label" for="toast-type-danger">Danger</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mb-3">
+                    <div class="col-md-4">
+                        <label for="toast-icon" class="form-label">Icon</label>
+                        <select id="toast-icon" class="form-select">
+                            <option value="default">Default</option>
+                            <option value="check">Check</option>
+                            <option value="bell">Bell</option>
+                            <option value="info">Info</option>
+                            <option value="warning">Warning</option>
+                            <option value="danger">Danger</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="form-check" style="margin-top:32px">
+                            <input class="form-check-input" type="checkbox" id="toast-sync-server">
+                            <label class="form-check-label" for="toast-sync-server">Sync to server (requires token)</label>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="toast-user-token" class="form-label">User token (for server sync)</label>
+                        <input type="text" id="toast-user-token" class="form-control" placeholder="paste your user token">
+                    </div>
+                </div>
+
+                <div class="d-flex gap-2">
+                    <button type="button" id="toast-save" class="btn btn-primary">Save</button>
+                    <button type="button" id="toast-reset" class="btn btn-secondary">Reset to defaults</button>
+                </div>
+
+                <div class="mt-3">
+                    <label class="form-label">Live preview</label>
+                    <div id="toast-preview-area" style="min-height:80px"></div>
+                    <div class="form-text">Preview updates as you change settings. The preview toast is persistent to help configuration.</div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="settings-msg" class="alert alert-info" style="display:none"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.1.3/js/bootstrap.bundle.min.js"></script>
+<script src="{{ url_for('static', filename='js/mq_scripts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+</body>
+</html>
