@@ -141,16 +141,110 @@ function parseServerTimestamp(ts) {
 
 async function fetchMqData() {
     try {
+        // --- Debug toggle init (persistent) ---
+        if (window.__mqDebugInit !== true) {
+            window.mqDebugEnabled = (localStorage.getItem('mq_debug') === 'true');
+            const existingToggle = document.getElementById('mq-debug-toggle');
+            if (existingToggle) {
+                existingToggle.checked = window.mqDebugEnabled;
+                existingToggle.addEventListener('change', (e) => {
+                    window.mqDebugEnabled = !!e.target.checked;
+                    try { localStorage.setItem('mq_debug', window.mqDebugEnabled ? 'true' : 'false'); } catch (err) {}
+                    const dbgEl = document.getElementById('debug-strip');
+                    if (dbgEl) dbgEl.style.background = window.mqDebugEnabled ? '#fff3cd' : '';
+                });
+            } else {
+                // create a small non-intrusive toggle in the top-right if none exists
+                try {
+                    const t = document.createElement('label');
+                    t.style.position = 'fixed';
+                    t.style.top = '8px';
+                    t.style.right = '8px';
+                    t.style.zIndex = 3000;
+                    t.style.fontSize = '12px';
+                    t.style.background = 'rgba(255,255,255,0.9)';
+                    t.style.padding = '4px 8px';
+                    t.style.borderRadius = '6px';
+                    t.style.boxShadow = '0 1px 4px rgba(0,0,0,0.12)';
+                    t.innerHTML = `<input id="mq-debug-toggle" type="checkbox" style="margin-right:6px"> Debug`;
+                    document.body.appendChild(t);
+                    const cb = document.getElementById('mq-debug-toggle');
+                    cb.checked = window.mqDebugEnabled;
+                    cb.addEventListener('change', (e) => {
+                        window.mqDebugEnabled = !!e.target.checked;
+                        try { localStorage.setItem('mq_debug', window.mqDebugEnabled ? 'true' : 'false'); } catch (err) {}
+                        const dbgEl = document.getElementById('debug-strip');
+                        if (dbgEl) dbgEl.style.background = window.mqDebugEnabled ? '#fff3cd' : '';
+                    });
+                } catch (e) {
+                    // ignore DOM insertion failures
+                }
+            }
+            window.__mqDebugInit = true;
+        }
+
+        const debug = !!window.mqDebugEnabled;
+
+        const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        if (debug) console.debug('[MQ DEBUG] fetch /api/mq-data start', { time: new Date().toISOString() });
+
         const response = await fetch('/api/mq-data');
-        const result = await response.json();
+        const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const tookMs = Math.round(t1 - t0);
+
+        if (!response.ok) {
+            const msg = `HTTP ${response.status} ${response.statusText}`;
+            if (debug) console.debug('[MQ DEBUG] fetch failed', { status: response.status, statusText: response.statusText, tookMs });
+            throw new Error(msg);
+        }
+
+        let result;
+        try {
+            result = await response.json();
+            // Normalize API formats: some endpoints return { mq_data: ... }
+            // while others may return the record directly. Accept both.
+            if (result && !result.mq_data && (result.timestamp || result.uuid || result.LPG || result.temperature)) {
+                if (debug) console.warn('[MQ DEBUG] Normalizing unwrapped API record to {mq_data:...}', { hint: result && (result.uuid || result.timestamp) });
+                else console.warn('Normalizing unwrapped API record to {mq_data:...} — enable MQ debug for details');
+
+                // Show a one-time in-UI dismissible banner so the user notices
+                try {
+                    const seenKey = 'mq_normalization_shown_v1';
+                    if (!sessionStorage.getItem(seenKey)) {
+                        const banner = document.createElement('div');
+                        banner.className = 'alert alert-warning alert-dismissible';
+                        banner.style.position = 'fixed';
+                        banner.style.top = '8px';
+                        banner.style.left = '50%';
+                        banner.style.transform = 'translateX(-50%)';
+                        banner.style.zIndex = 4000;
+                        banner.style.maxWidth = '920px';
+                        banner.style.boxShadow = '0 2px 8px rgba(0,0,0,0.12)';
+                        banner.innerHTML = `<div style="display:flex;align-items:center;gap:12px"><div style="flex:1"><strong>Note:</strong> API returned an unwrapped record; the frontend normalized it to the expected shape. Consider making the API return { mq_data: ... } consistently.</div><button type="button" aria-label="Close" style="background:none;border:none;padding:6px;cursor:pointer;font-size:16px">✕</button></div>`;
+                        const btn = banner.querySelector('button');
+                        btn.addEventListener('click', () => { banner.remove(); });
+                        document.body.appendChild(banner);
+                        sessionStorage.setItem(seenKey, '1');
+                    }
+                } catch (e) { if (debug) console.debug('[MQ DEBUG] failed to show normalization banner', e); }
+
+                result = { mq_data: result, server_now: result.server_now };
+            }
+            if (debug) console.debug('[MQ DEBUG] parsed JSON result', { tookMs, size: (result && JSON.stringify(result).length) || 0, result });
+        } catch (err) {
+            if (debug) console.error('[MQ DEBUG] JSON parse error', err);
+            throw err;
+        }
 
         // Store result in the global mqData so other controls can use it
         // The API may return either a single latest record (object) or an array.
         // If a single object is returned, merge it into the client's history (`mqData`).
         try {
             if (!result || !result.mq_data) {
+                if (debug) console.debug('[MQ DEBUG] result.mq_data missing or falsy — leaving mqData untouched');
                 mqData = mqData || [];
             } else if (Array.isArray(result.mq_data)) {
+                if (debug) console.debug('[MQ DEBUG] result.mq_data is array — replacing mqData with array of length', result.mq_data.length);
                 mqData = result.mq_data.slice();
             } else {
                 // Single object received; merge into existing mqData history
@@ -158,12 +252,13 @@ async function fetchMqData() {
                 mqData = mqData || [];
                 // Avoid duplicates by uuid or timestamp
                 let exists = false;
-                if (rec.uuid) {
+                if (rec && rec.uuid) {
                     exists = mqData.some(r => r && r.uuid && r.uuid === rec.uuid);
                 }
-                if (!exists) {
+                if (!exists && rec && rec.timestamp) {
                     exists = mqData.some(r => r && r.timestamp && r.timestamp === rec.timestamp);
                 }
+                if (debug) console.debug('[MQ DEBUG] merging single record into mqData', { rec, exists });
                 if (exists) {
                     // replace existing matching entry
                     mqData = mqData.map(r => ((r && r.uuid && rec.uuid && r.uuid === rec.uuid) || (r && r.timestamp && r.timestamp === rec.timestamp)) ? rec : r);
@@ -175,24 +270,23 @@ async function fetchMqData() {
                 }
             }
         } catch (e) {
-            mqData = result.mq_data || [];
+            if (debug) console.error('[MQ DEBUG] error while storing result into mqData', e);
+            mqData = result && result.mq_data ? (Array.isArray(result.mq_data) ? result.mq_data.slice() : [result.mq_data]) : (mqData || []);
         }
-        // (debug logging removed)
 
         // Note: render summary after filtering so the "previous" value for deltas is available
         // (use fallback logic below if filter yields no results)
-        
-        // Render summary will be called after we determine the sortedFiltered dataset below.
+
         if (!mqData || mqData.length === 0) {
-                    // Clear structured fields when no data
-                    const ids = ['lpg','co','smoke','co-mq7','ch4','co-mq9','co2','nh3','nox','alcohol','benzene','h2','air','temp','hum'];
-                    ids.forEach(id => {
-                        const el = document.getElementById(id + '-val');
-                        if (el) el.innerText = '—';
-                    });
-                    const badge = document.getElementById('sd-aqi-badge');
-                    if (badge) { badge.innerText = '—'; badge.style.backgroundColor = ''; badge.style.color = ''; }
-                }
+            // Clear structured fields when no data
+            const ids = ['lpg','co','smoke','co-mq7','ch4','co-mq9','co2','nh3','nox','alcohol','benzene','h2','air','temp','hum'];
+            ids.forEach(id => {
+                const el = document.getElementById(id + '-val');
+                if (el) el.innerText = '—';
+            });
+            const badge = document.getElementById('sd-aqi-badge');
+            if (badge) { badge.innerText = '—'; badge.style.backgroundColor = ''; badge.style.color = ''; }
+        }
 
         // Filter data based on selected criteria
         const filteredMqData = filterDataByCriteria(mqData || []);
@@ -226,7 +320,7 @@ async function fetchMqData() {
                         const prevRec = null;
                         renderMqSummary(latestRec, prevRec);
                     }
-                } catch (e) { console.warn('fallback render summary failed', e); }
+                } catch (e) { if (debug) console.warn('[MQ DEBUG] fallback render summary failed', e); }
             } else {
                 fallbackEl.style.display = 'none';
                 fallbackEl.innerHTML = '';
@@ -235,25 +329,40 @@ async function fetchMqData() {
 
         // Debug helper: log what the API returned and whether we used a fallback.
         try {
-            const dbg = { server_now: result && result.server_now, filtered_count: (filteredMqData||[]).length, total_count: (mqData||[]).length, usingFallback };
-            console.debug('fetchMqData result:', dbg);
+            const dbg = { server_now: result && result.server_now, filtered_count: (filteredMqData||[]).length, total_count: (mqData||[]).length, usingFallback, tookMs };
+            if (debug) console.debug('[MQ DEBUG] fetch result summary', dbg);
             // Also display the debug info in the visible debug strip for users
             const dbgEl = document.getElementById('debug-strip');
             if (dbgEl) {
                 const latestRec = (mqData && mqData.length > 0) ? mqData.slice().sort((a,b)=>parseServerTimestamp(b.timestamp)-parseServerTimestamp(a.timestamp))[0] : null;
                 const latestTs = latestRec && latestRec.timestamp ? parseServerTimestamp(latestRec.timestamp).toLocaleString() : '(none)';
                 const serverNow = result && result.server_now ? parseServerTimestamp(result.server_now).toLocaleString() : '(none)';
-                dbgEl.innerText = `Debug: server_now=${serverNow} • latest=${latestTs} • fallback=${usingFallback}`;
+                dbgEl.innerText = `Debug: server_now=${serverNow} • latest=${latestTs} • fallback=${usingFallback} • req=${tookMs}ms`;
+                // When full debug is enabled, append pretty JSON
+                if (debug) {
+                    try {
+                        const pretty = JSON.stringify(result, null, 2);
+                        dbgEl.innerText += '\n\n' + pretty;
+                        dbgEl.style.whiteSpace = 'pre-wrap';
+                        dbgEl.style.background = '#fff3cd';
+                        dbgEl.style.padding = '8px';
+                    } catch (e) {
+                        dbgEl.innerText += '\n\n(unable to stringify result)';
+                    }
+                } else {
+                    // reset styling if debug disabled
+                    dbgEl.style.background = '';
+                }
                 // Update the visible "last received" raw payload panel for quick debugging
                 try {
-                    updateLastReceivedUI(latestRec, result && result.server_now, usingFallback);
-                } catch (e) { console.debug('updateLastReceivedUI failed', e); }
+                    const latestForUI = (mqData && mqData.length > 0) ? mqData.slice().sort((a,b)=>parseServerTimestamp(b.timestamp)-parseServerTimestamp(a.timestamp))[0] : null;
+                    updateLastReceivedUI(latestForUI, result && result.server_now, usingFallback);
+                } catch (e) { if (debug) console.debug('[MQ DEBUG] updateLastReceivedUI failed', e); }
             }
-        } catch (e) { console.debug('debug strip update failed', e); }
+        } catch (e) { if (debug) console.debug('[MQ DEBUG] debug strip update failed', e); }
 
         // Sort usedData newest-first for chart/table/analysis and save for row click lookup
         const sortedFiltered = usedData.slice().sort((a, b) => parseServerTimestamp(b.timestamp) - parseServerTimestamp(a.timestamp));
-        // (debug logging removed)
         lastFilteredData = sortedFiltered.slice();
 
         // Render summary now that we have the sorted dataset (pass previous record for deltas)
@@ -274,63 +383,54 @@ async function fetchMqData() {
 
             renderMqSummary(latest, prev);
             // Update visible server timestamp indicator and flash if new
-                try {
-                    // Show the API-provided server time (last reported) and a separate
-                    // live local clock so the UI always shows a ticking time.
-                    const serverNowIso = result.server_now;
-                    const latestTs = latest.timestamp;
-                    const el = document.getElementById('server-latest-ts');
-                    if (serverNowIso) {
-                        lastServerNowIso = serverNowIso;
-                        // record when we received the server_now so we can advance it locally
-                        lastServerNowFetchAt = Date.now();
+            try {
+                const serverNowIso = result.server_now;
+                const latestTs = latest.timestamp;
+                const el = document.getElementById('server-latest-ts');
+                if (serverNowIso) {
+                    lastServerNowIso = serverNowIso;
+                    lastServerNowFetchAt = Date.now();
+                }
+                if (el) {
+                    let serverNowDisp = null;
+                    if (lastServerNowIso) {
+                        try {
+                            const base = parseServerTimestamp(lastServerNowIso);
+                            if (!isNaN(base.getTime()) && lastServerNowFetchAt) {
+                                const advanced = new Date(base.getTime() + (Date.now() - lastServerNowFetchAt));
+                                serverNowDisp = advanced.toLocaleString();
+                            } else if (!isNaN(base.getTime())) {
+                                serverNowDisp = base.toLocaleString();
+                            }
+                        } catch (e) { serverNowDisp = parseServerTimestamp(lastServerNowIso).toLocaleString(); }
                     }
-                    if (el) {
-                        // Compute an advanced server time: server_now + elapsed since fetch
-                        let serverNowDisp = null;
-                        if (lastServerNowIso) {
-                            try {
-                                const base = parseServerTimestamp(lastServerNowIso);
-                                if (!isNaN(base.getTime()) && lastServerNowFetchAt) {
-                                    const advanced = new Date(base.getTime() + (Date.now() - lastServerNowFetchAt));
-                                    serverNowDisp = advanced.toLocaleString();
-                                } else if (!isNaN(base.getTime())) {
-                                    serverNowDisp = base.toLocaleString();
-                                }
-                            } catch (e) { serverNowDisp = parseServerTimestamp(lastServerNowIso).toLocaleString(); }
-                        }
-                        const latestDisp = latestTs ? parseServerTimestamp(latestTs).toLocaleString() : null;
-                        const localDisp = new Date().toLocaleString();
-                        // Show server time with local timezone name to avoid confusion
-                        // (so users see the server time converted into their locale).
-                        const tzOpts = { timeZone: 'Europe/Athens', timeZoneName: 'short' };
-                        const serverNowPretty = serverNowDisp ? new Date(serverNowDisp).toLocaleString(undefined, tzOpts) : null;
-                        const latestPretty = latestDisp ? new Date(latestDisp).toLocaleString(undefined, tzOpts) : null;
-                        const localPretty = new Date().toLocaleString(undefined, tzOpts);
-                        if (serverNowPretty && latestPretty) el.innerText = `Server: ${serverNowPretty} (latest data: ${latestPretty}) | Local: ${localPretty}`;
-                        else if (serverNowPretty) el.innerText = `Server: ${serverNowPretty} | Local: ${localPretty}`;
-                        else if (latestPretty) el.innerText = `Server: ${latestPretty} | Local: ${localPretty}`;
-                        else el.innerText = `Local: ${localPretty}`;
-                        // visual flash to indicate new fetched info
-                        el.classList.add('bg-success');
-                        el.classList.add('text-white');
-                        setTimeout(() => { el.classList.remove('bg-success'); el.classList.remove('text-white'); }, 900);
-                    }
+                    const latestDisp = latestTs ? parseServerTimestamp(latestTs).toLocaleString() : null;
+                    const localDisp = new Date().toLocaleString();
+                    const tzOpts = { timeZone: 'Europe/Athens', timeZoneName: 'short' };
+                    const serverNowPretty = serverNowDisp ? new Date(serverNowDisp).toLocaleString(undefined, tzOpts) : null;
+                    const latestPretty = latestDisp ? new Date(latestDisp).toLocaleString(undefined, tzOpts) : null;
+                    const localPretty = new Date().toLocaleString(undefined, tzOpts);
+                    if (serverNowPretty && latestPretty) el.innerText = `Server: ${serverNowPretty} (latest data: ${latestPretty}) | Local: ${localPretty}`;
+                    else if (serverNowPretty) el.innerText = `Server: ${serverNowPretty} | Local: ${localPretty}`;
+                    else if (latestPretty) el.innerText = `Server: ${latestPretty} | Local: ${localPretty}`;
+                    else el.innerText = `Local: ${localPretty}`;
+                    el.classList.add('bg-success');
+                    el.classList.add('text-white');
+                    setTimeout(() => { el.classList.remove('bg-success'); el.classList.remove('text-white'); }, 900);
+                }
 
-                    if (latest.timestamp) {
-                        if (latest.timestamp !== lastServerTimestamp) {
-                            lastServerTimestamp = latest.timestamp;
-                        }
-                        // update the last-updated helper to the current client fetch time
-                        if (typeof window.__updateLastUpdated === 'function') {
-                            window.__updateLastUpdated(new Date().toLocaleString());
-                        }
+                if (latest.timestamp) {
+                    if (latest.timestamp !== lastServerTimestamp) {
+                        lastServerTimestamp = latest.timestamp;
                     }
-                } catch (e) { console.warn('server timestamp update error', e); }
+                    if (typeof window.__updateLastUpdated === 'function') {
+                        window.__updateLastUpdated(new Date().toLocaleString());
+                    }
+                }
+            } catch (e) { if (debug) console.warn('[MQ DEBUG] server timestamp update error', e); }
         }
 
         // Update the chart (chart update function will handle internal ordering/limiting)
-        // Pass the UI-filtered dataset; chart will apply its own chartTimeFilter if set.
         updateMqChart(sortedFiltered);
 
         // Update DataTable with latest filtered (or fallback) data
@@ -340,13 +440,28 @@ async function fetchMqData() {
         computeAndRenderAnalysis(sortedFiltered);
 
         // Update last-updated timestamp only if server timestamp not available
-        // If we have a latest server timestamp, __updateLastUpdated was already set above.
         if (typeof window.__updateLastUpdated === 'function') {
-            // show the client-side fetch time as the "Last updated" stamp
             window.__updateLastUpdated(new Date().toLocaleString());
         }
+
+        if (debug) console.debug('[MQ DEBUG] fetch /api/mq-data complete', { total: (mqData||[]).length, filtered: (filteredMqData||[]).length, used: (sortedFiltered||[]).length, tookMs });
+
     } catch (error) {
-        console.error('Error fetching MQ data:', error);
+        // Surface rich debug info when enabled
+        if (window && window.mqDebugEnabled) {
+            console.error('[MQ DEBUG] Error fetching MQ data:', error);
+            try {
+                const dbgEl = document.getElementById('debug-strip');
+                if (dbgEl) {
+                    dbgEl.innerText = 'Error fetching /api/mq-data: ' + (error && error.message ? error.message : String(error)) + '\n\n' + (error && error.stack ? error.stack : '');
+                    dbgEl.style.background = '#f8d7da';
+                    dbgEl.style.whiteSpace = 'pre-wrap';
+                    dbgEl.style.padding = '8px';
+                }
+            } catch (e) { /* ignore UI update failures */ }
+        } else {
+            console.error('Error fetching MQ data:', error);
+        }
     }
 }
 
