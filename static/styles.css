@@ -23,6 +23,19 @@ h1 {
     align-items: center;
     gap: 10px;
 }
+.mq-toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 2000;
+    display: flex;
+    flex-direction: column-reverse; /* newest on top */
+    gap: 8px;
+    align-items: flex-end;
+    max-width: calc(100% - 40px);
+    pointer-events: none; /* allow clicks through container except on toasts */
+}
+.mq-toast-container .mq-toast { pointer-events: auto; }
 .mq-toast--visible { opacity: 1; transform: translateY(0); }
 .mq-toast--hide { opacity: 0; transform: translateY(-6px); }
 
@@ -34,8 +47,15 @@ h1 {
 
 /* Make sure multiple toasts are readable on small screens */
 @media (max-width: 420px) {
-    .mq-toast { right: 8px; left: 8px; top: auto !important; }
+    .mq-toast { right: 8px; left: 8px; }
+    .mq-toast-container { left: 8px; right: 8px; align-items: stretch; }
 }
+
+/* container position variants */
+.mq-toast-pos-top-right { top:20px; right:20px; left:auto; bottom:auto; align-items:flex-end; }
+.mq-toast-pos-top-left { top:20px; left:20px; right:auto; bottom:auto; align-items:flex-start; }
+.mq-toast-pos-bottom-right { bottom:20px; right:20px; top:auto; left:auto; align-items:flex-end; }
+.mq-toast-pos-bottom-left { bottom:20px; left:20px; top:auto; right:auto; align-items:flex-start; }
 
 /* icon inside toast */
 .mq-toast__icon { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; flex:0 0 20px; }

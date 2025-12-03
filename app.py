@@ -895,6 +895,12 @@ def evaluation():
     return render_template("evaluation.html")
 
 
+@app.route('/settings')
+def settings():
+    """Render the settings page for client-side preferences."""
+    return render_template('settings.html')
+
+
 @app.route("/_debug/db-info")
 def _debug_db_info():
     try:

@@ -58,6 +58,21 @@ let activeFilter = '24hours'; // Default filter
 let mqDataTable = null;
 let lastFilteredData = [];
 let pollIntervalMs = 1000;
+
+// Toast settings helper: read persisted settings from localStorage
+function getToastSettings() {
+    const KEY = 'mq_toast_settings_v1';
+    const defaults = { enabled: true, duration: 4000, position: 'top-right', types: { success:true, info:true, warning:true, danger:true } };
+    try {
+        const raw = localStorage.getItem(KEY);
+        if (!raw) return defaults;
+        const parsed = JSON.parse(raw);
+        // shallow merge
+        const out = Object.assign({}, defaults, parsed);
+        out.types = Object.assign({}, defaults.types, (parsed && parsed.types) || {});
+        return out;
+    } catch (e) { return defaults; }
+}
 let pollTimerId = null;
 let isPolling = true;
 // Track the latest server 'now' reported by the API and when we received it so
@@ -1329,16 +1344,24 @@ function computeAndRenderAnalysis(data) {
     });
 }
 
-// Minimal toast helper: floating message that auto dismisses
-function showToast(message, type) {
+// showToast supports both old signature and new options object
+// showToast(message, typeOrOptions)
+function showToast(message, typeOrOptions) {
     try {
+        // normalize options
+        let opts = {};
+        if (!typeOrOptions) opts = {};
+        else if (typeof typeOrOptions === 'string') opts.type = typeOrOptions;
+        else if (typeof typeOrOptions === 'object') opts = Object.assign({}, typeOrOptions);
+
         const toastId = 'mq-toast-' + Date.now();
         const el = document.createElement('div');
         el.id = toastId;
         // use CSS classes for styling so different themes can be applied
         el.className = 'mq-toast';
-        const variantClass = (typeof type === 'string') ? ('mq-toast--' + type) : '';
-        if (variantClass) el.classList.add(variantClass);
+        const variant = opts.type || 'info';
+        el.classList.add('mq-toast--' + variant);
+
         // build icon + message elements to avoid HTML injection
         const iconSpan = document.createElement('span');
         iconSpan.className = 'mq-toast__icon';
@@ -1346,45 +1369,51 @@ function showToast(message, type) {
         msgDiv.className = 'mq-toast__msg';
         msgDiv.textContent = message;
 
-        // choose an inline SVG icon per variant (use currentColor for fill)
-        let iconSvg = '';
-        const t = (typeof type === 'string') ? type : '';
-        if (t === 'success') {
-            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M13.485 3.929a1 1 0 0 1 0 1.414l-7.07 7.071a1 1 0 0 1-1.415 0L2.515 9.91a1 1 0 1 1 1.414-1.414l1.486 1.486 6.363-6.364a1 1 0 0 1 1.207-.295z"/></svg>';
-        } else if (t === 'warning') {
-            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M7.001 1.5a1 1 0 0 1 .998 0l6 3.464A1 1 0 0 1 15 6.366v3.268a1 1 0 0 1-.999.902l-6  .5a1 1 0 0 1-.999 0l-6-.5A1 1 0 0 1 1 9.634V6.366a1 1 0 0 1 .001-.902L7.001 1.5zM7.5 5a.5.5 0 0 0-1 0v3a.5.5 0 0 0 1 0V5zm0 5a.5.5 0 0 0-1 0v1a.5.5 0 0 0 1 0v-1z"/></svg>';
-        } else if (t === 'danger') {
-            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 1.333A6.667 6.667 0 1 0 8 14.667 6.667 6.667 0 0 0 8 1.333zm0 4a.667.667 0 0 1 .667.667v3.333A.667.667 0 0 1 8 10a.667.667 0 0 1-.667-.667V6A.667.667 0 0 1 8 5.333zM8 11.333a.667.667 0 1 1 0 1.333.667.667 0 0 1 0-1.333z"/></svg>';
-        } else {
-            // info / default
-            iconSvg = '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm.93 4.588a.5.5 0 0 1-.858.514 1.5 1.5 0 1 0 0 2.796.5.5 0 1 1 .858.514A2.5 2.5 0 1 1 8 5.587zM8 11a.5.5 0 0 1 0 1 .5.5 0 0 1 0-1z"/></svg>';
-        }
+        // choose an inline SVG icon per variant or user-specified icon
+        let iconName = opts.icon || 'default';
+        const ICONS = {
+            'default': '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm.93 4.588a.5.5 0 0 1-.858.514 1.5 1.5 0 1 0 0 2.796.5.5 0 1 1 .858.514A2.5 2.5 0 1 1 8 5.587zM8 11a.5.5 0 0 1 0 1 .5.5 0 0 1 0-1z"/></svg>',
+            'check': '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M13.485 3.929a1 1 0 0 1 0 1.414l-7.07 7.071a1 1 0 0 1-1.415 0L2.515 9.91a1 1 0 1 1 1.414-1.414l1.486 1.486 6.363-6.364a1 1 0 0 1 1.207-.295z"/></svg>',
+            'bell': '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M8 16a2 2 0 0 0 1.985-1.75H6.015A2 2 0 0 0 8 16zm.104-14.5A1 1 0 0 0 7 1H9a1 1 0 0 0-.104.5c-.03.29-.07.68-.07 1.5H8c0-.82-.04-1.21-.104-1.5zM5 6a3 3 0 0 1 6 0c0 1.098.216 1.934.503 2.5H4.497C4.784 7.934 5 7.098 5 6z"/></svg>',
+            'info': '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm.93 4.588a.5.5 0 0 1-.858.514 1.5 1.5 0 1 0 0 2.796.5.5 0 1 1 .858.514A2.5 2.5 0 1 1 8 5.587zM8 11a.5.5 0 0 1 0 1 .5.5 0 0 1 0-1z"/></svg>',
+            'warning': '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M7.001 1.5a1 1 0 0 1 .998 0l6 3.464A1 1 0 0 1 15 6.366v3.268a1 1 0 0 1-.999.902l-6  .5a1 1 0 0 1-.999 0l-6-.5A1 1 0 0 1 1 9.634V6.366a1 1 0 0 1 .001-.902L7.001 1.5zM7.5 5a.5.5 0 0 0-1 0v3a.5.5 0 0 0 1 0V5zm0 5a.5.5 0 0 0-1 0v1a.5.5 0 0 0 1 0v-1z"/></svg>',
+            'danger': '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M8 1.333A6.667 6.667 0 1 0 8 14.667 6.667 6.667 0 0 0 8 1.333zm0 4a.667.667 0 0 1 .667.667v3.333A.667.667 0 0 1 8 10a.667.667 0 0 1-.667-.667V6A.667.667 0 0 1 8 5.333zM8 11.333a.667.667 0 1 1 0 1.333.667.667 0 0 1 0-1.333z"/></svg>'
+        };
+        const iconSvg = ICONS[iconName] || ICONS['default'];
         iconSpan.innerHTML = iconSvg;
         el.appendChild(iconSpan);
         el.appendChild(msgDiv);
-        // compute stacking offset: place new toasts under existing ones
-        const existing = Array.from(document.querySelectorAll('.mq-toast'));
-        let offset = 20; // start from 20px from top
-        for (const t of existing) {
-            try {
-                const h = t.getBoundingClientRect().height || 56;
-                offset += Math.round(h) + 8; // gap between toasts
-            } catch (e) {
-                offset += 64;
-            }
+        // use a persistent container so toasts stack consistently
+        const containerId = 'mq-toast-container';
+        let container = document.getElementById(containerId);
+        if (!container) {
+            container = document.createElement('div');
+            container.id = containerId;
+            container.className = 'mq-toast-container';
+            document.body.appendChild(container);
         }
-        el.style.top = offset + 'px';
-        el.style.right = '20px';
-        el.style.position = 'fixed';
-        el.style.zIndex = 2000;
-        document.body.appendChild(el);
+        // append to container; newest on top
+        container.insertBefore(el, container.firstChild);
+        // respect stored settings: enabled, duration, types
+        const settings = getToastSettings();
+        if (!settings || settings.enabled !== true) return;
+        if (variant && settings.types && settings.types[variant] === false) return;
+        // apply position via container class
+        const pos = settings.position || 'top-right';
+        container.classList.remove('mq-toast-pos-top-right','mq-toast-pos-top-left','mq-toast-pos-bottom-right','mq-toast-pos-bottom-left');
+        container.classList.add('mq-toast-pos-' + pos.replace(/\s+/g,'').replace(/_/g,'-'));
+        // set duration and persistence
+        const duration = (opts.duration !== undefined && opts.duration !== null) ? Number(opts.duration) : ((settings && settings.duration) ? Number(settings.duration) : 4000);
+        const persistent = !!opts.persistent;
         // animate in using class
         requestAnimationFrame(() => { el.classList.add('mq-toast--visible'); });
-        // auto remove after 4s
-        setTimeout(() => {
-            try { el.classList.remove('mq-toast--visible'); el.classList.add('mq-toast--hide'); } catch (e) {}
-            setTimeout(() => { try { document.body.removeChild(el); } catch (e) {} }, 360);
-        }, 4000);
+        // auto remove unless persistent
+        if (!persistent) {
+            setTimeout(() => {
+                try { el.classList.remove('mq-toast--visible'); el.classList.add('mq-toast--hide'); } catch (e) {}
+                setTimeout(() => { try { if (el && el.parentNode) el.parentNode.removeChild(el); } catch (e) {} }, 360);
+            }, duration);
+        }
     } catch (e) { console.warn('showToast error', e); }
 }
 
