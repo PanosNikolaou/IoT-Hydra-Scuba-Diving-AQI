@@ -61,3 +61,15 @@ h1 {
 .mq-toast__icon { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; flex:0 0 20px; }
 .mq-toast__icon svg { width: 18px; height: 18px; display:block; }
 .mq-toast__msg { line-height:1.1; }
+
+/* Make container with class `mt-5` span the full viewport width
+   while keeping sensible horizontal padding for readability. The
+   !important flags ensure this overrides Bootstrap's `.container`
+   max-width sizing for this specific use-case. */
+.container.mt-5 {
+    max-width: 100% !important;
+    width: 100% !important;
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+    margin: 0 auto !important;
+}

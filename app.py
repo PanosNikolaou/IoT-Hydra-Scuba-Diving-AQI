@@ -3,19 +3,30 @@ import threading
 import os
 from datetime import datetime, timezone, timedelta
 try:
-    # Python 3.9+: zoneinfo is preferred
-    from zoneinfo import ZoneInfo
+    # Python 3.9+: zoneinfo is preferred. Use a guarded import so IDEs
+    # and linters that run on older Python interpreters don't error.
+    from zoneinfo import ZoneInfo  # type: ignore
+except Exception:
+    # Provide a lightweight stub for static analysis tools so `ZoneInfo`
+    # is always defined (some IDEs flag `zoneinfo` as unresolved).
+    class ZoneInfo:
+        def __init__(self, name):
+            # This stub should never be used at runtime when the real
+            # `zoneinfo` is absent; runtime code below will fall back to
+            # `dateutil` or a fixed-offset timezone.
+            raise RuntimeError("zoneinfo not available")
+
+# Try to create an Athens timezone using ZoneInfo (if available),
+# otherwise fall back to dateutil.tz and lastly to a fixed offset.
+try:
     _ATHENS_TZ = ZoneInfo('Europe/Athens')
 except Exception:
-    # Fallback: try dateutil (commonly installed via pandas)
     try:
         from dateutil import tz as _dz
         _ATHENS_TZ = _dz.gettz('Europe/Athens')
     except Exception:
         # Last-resort: fixed offset of +02:00 (works for winter; DST not handled)
         _ATHENS_TZ = timezone(timedelta(hours=2))
-        # (no per-branch to_athens_iso here; define a single helper below)
-        pass
 
 # Module-level helper to convert datetimes to Europe/Athens ISO strings.
 def to_athens_iso(dt):
@@ -388,6 +399,9 @@ with app.app_context():
 @limiter.limit("10 per second")  # Limit to 10 requests per second
 def receive_data():
     try:
+        # track timing for this request to diagnose slow commits
+        request_start = time.time()
+
         # Parse incoming JSON data
         data = request.get_json()
         if not data:
@@ -593,9 +607,35 @@ def receive_data():
                             pass
                 db.session.add(existing)
                 # use safe commit to reduce chance of 'database is locked' failures
+                t_before = time.time()
                 safe_commit(db.session)
+                commit_dur = time.time() - t_before
                 try:
-                    app.logger.info('ingest updated existing mq row id=%s uuid=%s', existing.id, getattr(existing, 'uuid', None))
+                    app.logger.info('ingest updated existing mq row id=%s uuid=%s commit_dur=%.3fs total_elapsed=%.3fs', existing.id, getattr(existing, 'uuid', None), commit_dur, time.time() - request_start)
+                except Exception:
+                    pass
+                try:
+                    # Also print to stdout so the development server log reliably
+                    # captures commit timing even when the app logger level is higher.
+                    print(f"INGEST_UPDATED id={existing.id} uuid={getattr(existing,'uuid',None)} commit_dur={commit_dur:.3f}s total_elapsed={(time.time() - request_start):.3f}s")
+                except Exception:
+                    pass
+                try:
+                    # Debug: print DB row count as seen from this process after commit
+                    import sqlite3 as _sqlite
+                    try:
+                        _conn = _sqlite.connect(DB_FILE)
+                        _cur = _conn.cursor()
+                        _cur.execute("SELECT COUNT(*) FROM mq_sensor_data")
+                        _cnt = _cur.fetchone()[0]
+                        print(f"DBG_POST_COMMIT existing_count={_cnt}")
+                        try:
+                            _cur.close()
+                            _conn.close()
+                        except Exception:
+                            pass
+                    except Exception as _e:
+                        print("DBG_POST_COMMIT count query failed:", _e)
                 except Exception:
                     pass
                 return jsonify({"status": "success", "message": "Existing record updated", "uuid": getattr(existing, 'uuid', None)}), 200
@@ -610,9 +650,32 @@ def receive_data():
         # Insert a new MQ record when no duplicate found / dedupe failed
         new_mq_data = MQSensorData(**mq_kwargs)
         db.session.add(new_mq_data)
+        t_before = time.time()
         safe_commit(db.session)
+        commit_dur = time.time() - t_before
         try:
-            app.logger.info('ingest saved mq row uuid=%s id=%s', mq_kwargs.get('uuid'), new_mq_data.id)
+            app.logger.info('ingest saved mq row uuid=%s id=%s commit_dur=%.3fs total_elapsed=%.3fs', mq_kwargs.get('uuid'), new_mq_data.id, commit_dur, time.time() - request_start)
+        except Exception:
+            pass
+        try:
+            print(f"INGEST_SAVED uuid={mq_kwargs.get('uuid')} id={new_mq_data.id} commit_dur={commit_dur:.3f}s total_elapsed={(time.time() - request_start):.3f}s")
+        except Exception:
+            pass
+        try:
+            import sqlite3 as _sqlite
+            try:
+                _conn = _sqlite.connect(DB_FILE)
+                _cur = _conn.cursor()
+                _cur.execute("SELECT COUNT(*) FROM mq_sensor_data")
+                _cnt = _cur.fetchone()[0]
+                print(f"DBG_POST_COMMIT new_count={_cnt}")
+                try:
+                    _cur.close()
+                    _conn.close()
+                except Exception:
+                    pass
+            except Exception as _e:
+                print("DBG_POST_COMMIT count query failed:", _e)
         except Exception:
             pass
         return jsonify({"status": "success", "message": "Data saved", "uuid": mq_kwargs.get('uuid')}), 200
@@ -747,6 +810,69 @@ def admin_mq_ingest():
         return jsonify({'status': 'error', 'message': f'failed reading log: {e}'}), 500
 
     return jsonify({'entries': entries})
+
+
+@app.route('/admin/debug-insert', methods=['POST'])
+def admin_debug_insert():
+    """Insert a small debug row into `mq_sensor_data` using a direct
+    sqlite3 connection and return the new row's uuid and current row count.
+
+    This bypasses SQLAlchemy so we can verify the process can write to the
+    same on-disk DB file and that the row becomes visible to other clients.
+    """
+    try:
+        import sqlite3 as _sqlite
+        payload = request.get_json(silent=True) or {}
+        # allow caller to specify a timestamp string (ISO) for the row
+        ts_val = payload.get('timestamp')
+        if ts_val:
+            try:
+                # try to normalize to SQLite-friendly naive UTC datetime
+                dt = datetime.fromisoformat(ts_val.replace('Z', '+00:00'))
+                ts_text = dt.astimezone(timezone.utc).replace(tzinfo=None).strftime('%Y-%m-%d %H:%M:%S')
+            except Exception:
+                ts_text = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            ts_text = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+
+        new_uuid = str(uuid4())
+        raw = json.dumps(payload, ensure_ascii=False)
+
+        conn = _sqlite.connect(DB_FILE)
+        cur = conn.cursor()
+        try:
+            cur.execute("INSERT INTO mq_sensor_data(timestamp, uuid, raw_payload) VALUES (?, ?, ?)", (ts_text, new_uuid, raw))
+            conn.commit()
+        except Exception as ie:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            cur.close()
+            conn.close()
+            return jsonify({'status': 'error', 'message': f'insert failed: {ie}'}), 500
+
+        # fetch count and the inserted row for verification
+        try:
+            cur.execute("SELECT COUNT(*) FROM mq_sensor_data")
+            cnt = cur.fetchone()[0]
+        except Exception:
+            cnt = None
+        try:
+            cur.execute("SELECT id, timestamp, uuid FROM mq_sensor_data WHERE uuid = ?", (new_uuid,))
+            row = cur.fetchone()
+        except Exception:
+            row = None
+
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+        return jsonify({'status': 'success', 'uuid': new_uuid, 'count': cnt, 'row': row}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 
@@ -890,6 +1016,57 @@ def get_mq_data():
         print("Error:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/user-settings', methods=['GET', 'POST'])
+def user_settings():
+    """Simple per-user settings store keyed by a user token header.
+
+    NOTE: This is a minimal, token-keyed storage for preferences to allow
+    syncing settings across devices. It is NOT a secure authentication
+    mechanism. Requests must include `X-User-Token` header. In production
+    replace this with a proper user auth system and secure storage.
+    """
+    token = request.headers.get('X-User-Token')
+    if not token:
+        return jsonify({'status': 'error', 'message': 'Missing X-User-Token header'}), 401
+
+    store_path = os.path.join(os.path.dirname(__file__), 'instance', 'user_settings.json')
+    # Ensure directory exists
+    try:
+        os.makedirs(os.path.dirname(store_path), exist_ok=True)
+    except Exception:
+        pass
+
+    if request.method == 'GET':
+        if not os.path.exists(store_path):
+            return jsonify({}), 200
+        try:
+            with open(store_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            return jsonify({}), 200
+        # Return settings for this token if present
+        return jsonify(data.get(token, {})), 200
+
+    # POST: store settings for token
+    try:
+        payload = request.get_json() or {}
+    except Exception:
+        payload = {}
+    try:
+        all_data = {}
+        if os.path.exists(store_path):
+            try:
+                with open(store_path, 'r', encoding='utf-8') as f:
+                    all_data = json.load(f) or {}
+            except Exception:
+                all_data = {}
+        all_data[token] = payload
+        with open(store_path, 'w', encoding='utf-8') as f:
+            json.dump(all_data, f, ensure_ascii=False, indent=2)
+        return jsonify({'status': 'ok'}), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route("/evaluation")
 def evaluation():
     return render_template("evaluation.html")
@@ -1031,8 +1208,13 @@ if __name__ == "__main__":
     # Default is production-like single-process mode (no reloader).
     flask_debug = os.environ.get('FLASK_DEBUG', '0') == '1'
 
-    # Only start XBee listener in the reloader child or when not running with reloader.
-    if (not flask_debug) or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    # Control whether to start the in-process XBee listener with an env var.
+    # Starting the listener inside the Flask process causes that module to
+    # make outbound HTTP requests back to the same server (for queued flushes).
+    # This can interfere with debugging and make request timing/locking
+    # harder to reproduce. Require explicit opt-in via `START_XBEE=1`.
+    start_xbee = os.environ.get('START_XBEE', '0') == '1'
+    if start_xbee and ((not flask_debug) or os.environ.get("WERKZEUG_RUN_MAIN") == "true"):
         t = threading.Thread(target=xbee_listener, daemon=True)
         t.start()
 
