@@ -7,15 +7,28 @@ import os
 import logging
 from datetime import datetime
 from collections import deque
+from pathlib import Path
 
 # List of possible serial ports
 # Try common baud rates if initial connection doesn't yield data
-BAUD_RATE = 9600
-COMMON_BAUD_RATES = [9600, 19200, 38400, 57600, 115200]
+# Default to 115200 which is commonly used by Arduino/XBee setups.
+# Allow overriding via environment variable `XBEE_BAUD` for flexibility.
+BAUD_RATE = int(os.getenv('XBEE_BAUD', '115200'))
+COMMON_BAUD_RATES = [115200, 57600, 38400, 19200, 9600]
 BAUD_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'instance', 'xbee_baud.json')
 # Keep a small recent raw buffer for diagnostics
 recent_raw = deque(maxlen=32)
 FLASK_API_URL = "http://127.0.0.1:5000/api/data"
+QUEUE_PATH = os.path.join(os.path.dirname(__file__), 'instance', 'xbee_queue.jsonl')
+# Flush/POST timeouts and retry policy (configurable via env vars)
+FLUSH_REQUEST_TIMEOUT = float(os.getenv('XBEE_FLUSH_TIMEOUT', '10'))
+FLUSH_ATTEMPTS = int(os.getenv('XBEE_FLUSH_ATTEMPTS', '3'))
+
+# Ensure instance dir exists for queue file
+try:
+    Path(os.path.dirname(QUEUE_PATH)).mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 # module logger: quiet by default, enable verbose by setting XBEE_VERBOSE or XBEE_DEBUG
 logger = logging.getLogger(__name__)
@@ -24,6 +37,13 @@ if os.getenv("XBEE_VERBOSE") or os.getenv("XBEE_DEBUG"):
 else:
     logger.setLevel(logging.WARNING)
 
+# If debug is requested, ensure there's a console handler so messages appear
+if (os.getenv("XBEE_VERBOSE") or os.getenv("XBEE_DEBUG")) and not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG)
+    fmt = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
 
 def find_xbee_port():
     """Finds the FT231X USB UART device, which is likely an XBee."""
@@ -197,18 +217,95 @@ def connect_xbee(retries=3, delay=2):
 
 def send_to_flask(data):
     try:
-        response = requests.post(FLASK_API_URL, json=data)
+        response = requests.post(FLASK_API_URL, json=data, timeout=FLUSH_REQUEST_TIMEOUT)
         if response.status_code == 200:
             logger.debug("Data successfully sent to Flask: %s", data)
         else:
             logger.warning("Error sending data to Flask: %s %s", response.status_code, response.text)
     except Exception as e:
         logger.warning("Error communicating with Flask: %s", e)
+        # Persist the failed payload to a local queue for retry
+        try:
+            with open(QUEUE_PATH, 'a') as qf:
+                qf.write(json.dumps(data, default=str) + "\n")
+            logger.info("Queued payload to %s for later retry", QUEUE_PATH)
+        except Exception as qe:
+            logger.error("Failed to write payload to queue: %s", qe)
     finally:
         try:
             logger.info("Posted data to Flask endpoint; payload keys: %s", list(data.keys()) if isinstance(data, dict) else str(type(data)))
         except Exception:
             logger.info("Posted data to Flask endpoint; payload type: %s", type(data))
+
+
+def flush_queue():
+    """Attempt to resend queued payloads stored in QUEUE_PATH.
+    On success, remove items from the queue. Failures remain for later retry.
+    """
+    if not os.path.exists(QUEUE_PATH):
+        return
+    try:
+        with open(QUEUE_PATH, 'r') as qf:
+            lines = [l.strip() for l in qf if l.strip()]
+    except Exception as e:
+        logger.debug("Could not read queue file %s: %s", QUEUE_PATH, e)
+        return
+
+    if not lines:
+        try:
+            os.remove(QUEUE_PATH)
+        except Exception:
+            pass
+        return
+
+    remaining = []
+    logger.info("Flushing %d queued payload(s) to Flask", len(lines))
+    for ln in lines:
+        try:
+            payload = json.loads(ln)
+        except Exception:
+            # corrupted line — skip
+            logger.debug("Skipping malformed queued line")
+            continue
+
+        success = False
+        attempt = 0
+        # Attempt multiple times with exponential backoff between attempts
+        while attempt < FLUSH_ATTEMPTS and not success:
+            attempt += 1
+            try:
+                timeout = FLUSH_REQUEST_TIMEOUT * (1 + (attempt - 1) * 0.5)
+                resp = requests.post(FLASK_API_URL, json=payload, timeout=timeout)
+                if resp.status_code == 200:
+                    logger.info("Flushed queued payload successfully (attempt %d)", attempt)
+                    success = True
+                    break
+                else:
+                    logger.warning("Flush attempt %d: server returned %s; will retry", attempt, resp.status_code)
+            except Exception as e:
+                logger.warning("Flush attempt %d: error communicating with Flask: %s", attempt, e)
+
+            # Backoff before next attempt (capped)
+            if not success and attempt < FLUSH_ATTEMPTS:
+                backoff = min(2 ** attempt, 8)
+                time.sleep(backoff)
+
+        if not success:
+            logger.info("Flush: requeueing payload after %d attempts", FLUSH_ATTEMPTS)
+            remaining.append(ln)
+
+    # write remaining back
+    try:
+        if remaining:
+            with open(QUEUE_PATH, 'w') as qf:
+                qf.write('\n'.join(remaining) + '\n')
+        else:
+            try:
+                os.remove(QUEUE_PATH)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug("Could not update queue file: %s", e)
 
 
 def parse_xbee_data(raw_data):
@@ -238,7 +335,7 @@ def parse_xbee_data(raw_data):
                 normalized[k] = v
 
         # Coerce numeric fields to numbers where possible
-        numeric_keys = ['LPG','CO','Smoke','CO_MQ7','CH4','CO_MQ9','CO2','NH3','NOx','Alcohol','Benzene','H2','Air','Temperature','Humidity','SD_AQI']
+        numeric_keys = ['LPG','CO','Smoke','CO_MQ7','CH4','CO_MQ9','CO2','NH3','NOx','Alcohol','Benzene','H2','Air','Temperature','Humidity','SD_AQI','timestamp']
         for nk in numeric_keys:
             if nk in normalized:
                 try:
@@ -248,13 +345,14 @@ def parse_xbee_data(raw_data):
                     # leave as-is if coercion fails
                     pass
 
-        # If device provided a timestamp_ms, attach a server-side ISO timestamp for ordering
-        if 'timestamp_ms' in normalized:
-            try:
-                # Use server receive time as authoritative timestamp (can't derive absolute time from millis)
-                normalized['timestamp'] = datetime.utcnow().isoformat()
-            except Exception:
-                pass
+        # Preserve any device-provided timestamp (seconds or milliseconds) and
+        # attach a server receive time separately for diagnostics. Do NOT
+        # overwrite a device timestamp with server time — that breaks client-side
+        # ordering when devices include real epochs.
+        try:
+            normalized['_received_at'] = datetime.utcnow().isoformat()
+        except Exception:
+            pass
 
         logger.debug("Normalized data to send to Flask: %s", normalized)
         return normalized
@@ -342,6 +440,9 @@ def auto_baud_probe(port, bauds=None, timeout_per_baud=0.4):
 def main():
     # modify module-level `ser` and `_buffer`
     global ser, _buffer
+    # interval (seconds) to attempt flushing the on-disk queue
+    FLUSH_INTERVAL = float(os.getenv('XBEE_FLUSH_INTERVAL', '5'))
+    last_flush = time.time()
 
     while True:
         try:
@@ -350,6 +451,15 @@ def main():
                 connect_xbee(retries=1, delay=1)
                 time.sleep(1)
                 continue
+
+            # Periodically attempt to flush queued payloads to Flask
+            try:
+                if time.time() - last_flush >= FLUSH_INTERVAL:
+                    flush_queue()
+                    last_flush = time.time()
+            except Exception:
+                # protect main loop from flush errors
+                logger.debug("flush_queue() failed, will retry later")
 
             if ser.in_waiting > 0:
                 # Read available bytes with small retries — sometimes the port
@@ -385,6 +495,9 @@ def main():
 
                     # decode and append
                     chunk = chunk_bytes.decode('utf-8', errors='replace')
+                    # Debug: show raw bytes and decoded chunk when debugging is enabled
+                    logger.debug("Serial chunk bytes (len=%d): %r", len(chunk_bytes), chunk_bytes)
+                    logger.debug("Decoded chunk: %r", chunk)
                 except serial.SerialException as e:
                     logger.warning("SerialException reading serial chunk: %s", e)
                     try:
@@ -420,9 +533,17 @@ def main():
                     if json_str is None:
                         break
                     json_str = json_str.strip()
+                    logger.debug("Extracted JSON string: %s", json_str)
                     parsed_data = parse_xbee_data(json_str)
                     if parsed_data:
+                        # Record the complete JSON string for frontend debugging (newest-first)
+                        try:
+                            recent_raw.appendleft(json_str)
+                        except Exception:
+                            pass
                         send_to_flask(parsed_data)
+                    else:
+                        logger.debug("parse_xbee_data returned None for extracted json: %s", json_str)
             else:
                 # avoid busy spin
                 time.sleep(0.05)

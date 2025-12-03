@@ -47,6 +47,8 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
+from sqlalchemy import text
 
 import xbreemw
 
@@ -64,8 +66,46 @@ except Exception:
     pass
 app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{DB_FILE}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Improve SQLite concurrency: increase low-level timeout and avoid connection pooling
+# so concurrent short-lived connections don't compete for the same file handle.
+# Also set these engine options before SQLAlchemy() is constructed.
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'connect_args': {'timeout': 30},
+    'poolclass': NullPool,
+}
 
 db = SQLAlchemy(app)
+
+# Helper to commit with retries when SQLite reports the database is locked.
+def safe_commit(session, retries=5, initial_delay=0.1):
+    import sqlite3
+    delay = initial_delay
+    for attempt in range(1, retries + 1):
+        try:
+            session.commit()
+            return True
+        except OperationalError as oe:
+            # SQLAlchemy wraps sqlite errors; inspect the inner exception
+            msg = str(oe)
+            if 'database is locked' in msg or isinstance(getattr(oe, 'orig', None), sqlite3.OperationalError):
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                if attempt == retries:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 2.0)
+                continue
+            else:
+                # Not a locking error — re-raise
+                raise
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            raise
 
 # Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -251,6 +291,19 @@ with app.app_context():
             conn.close()
         except Exception:
             pass
+        # Ensure SQLite is configured for WAL journaling to improve concurrent readers/writers.
+        try:
+            with engine.connect() as _conn:
+                try:
+                    _conn.execute(text('PRAGMA journal_mode = WAL'))
+                except Exception:
+                    pass
+                try:
+                    _conn.execute(text('PRAGMA synchronous = NORMAL'))
+                except Exception:
+                    pass
+        except Exception:
+            pass
     except Exception as e:
         # Non-fatal: if this fails (e.g., non-sqlite engine), log and continue; new DBs will include the columns.
         print('Warning ensuring schema columns:')
@@ -346,6 +399,54 @@ def receive_data():
         except Exception:
             pass
 
+        # Persist a short textual log of incoming POSTs to a file for debugging
+        try:
+            log_dir = os.path.join(os.path.dirname(__file__), 'instance')
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, 'mq_ingest.log')
+
+            # Rotate when the log grows beyond MAX_BYTES
+            try:
+                MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+                if os.path.exists(log_path) and os.path.getsize(log_path) >= MAX_BYTES:
+                    ts = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+                    archived = os.path.join(log_dir, f'mq_ingest.{ts}.log')
+                    try:
+                        os.rename(log_path, archived)
+                    except Exception:
+                        # if rename fails, attempt to truncate instead
+                        try:
+                            with open(log_path, 'w', encoding='utf-8'):
+                                pass
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+            try:
+                with open(log_path, 'a', encoding='utf-8') as lf:
+                    entry = {
+                        'received_at_utc': datetime.utcnow().isoformat() + 'Z',
+                        'remote_addr': request.remote_addr,
+                        'keys': list(data.keys()) if isinstance(data, dict) else None,
+                        'payload': data
+                    }
+                    try:
+                        lf.write(json.dumps(entry, ensure_ascii=False) + '\n')
+                    except Exception:
+                        lf.write(f"{datetime.utcnow().isoformat()}Z {request.remote_addr} PAYLOAD_REPR: {repr(data)}\n")
+            except Exception:
+                try:
+                    app.logger.warning('Failed to append to mq_ingest.log')
+                except Exception:
+                    pass
+        except Exception:
+            # Non-fatal: do not block ingestion if logging fails
+            try:
+                app.logger.warning('Failed to write mq_ingest.log outer')
+            except Exception:
+                pass
+
         # If the payload includes a 'timestamp' field (ISO string) or epoch ms, try to parse it
         parsed_ts = None
         if isinstance(data, dict):
@@ -415,7 +516,8 @@ def receive_data():
         if 'pm10' in SENSOR_COLUMNS or True:
             sensor_kwargs['pm10'] = data.get('pm10', 0.0)
         if 'timestamp' in SENSOR_COLUMNS:
-            sensor_kwargs['timestamp'] = parsed_ts if parsed_ts is not None else None
+            # If device did not provide a timestamp, set server UTC now
+            sensor_kwargs['timestamp'] = parsed_ts if parsed_ts is not None else datetime.utcnow()
         if 'uuid' in SENSOR_COLUMNS:
             sensor_kwargs['uuid'] = str(uuid4())
         if 'raw_payload' in SENSOR_COLUMNS:
@@ -444,7 +546,9 @@ def receive_data():
                 mq_kwargs[col] = pick_keys(key, key.lower())
 
         if 'timestamp' in MQ_COLUMNS:
-            mq_kwargs['timestamp'] = parsed_ts if parsed_ts is not None else None
+            # If device did not provide a timestamp, set server UTC now so
+            # newly-ingested rows are ordered correctly by time for the UI.
+            mq_kwargs['timestamp'] = parsed_ts if parsed_ts is not None else datetime.utcnow()
         if 'uuid' in MQ_COLUMNS:
             mq_kwargs['uuid'] = str(uuid4())
         # sd_aqi fields
@@ -458,16 +562,60 @@ def receive_data():
             except Exception:
                 mq_kwargs['raw_payload'] = str(data)
 
+        # Idempotency / deduplication: if the incoming payload includes a uuid
+        # that already exists in the DB, update that record instead of inserting
+        # a duplicate. If no uuid is provided, but a record exists with the
+        # same timestamp and a matching subset of sensor values (LPG/CO/Smoke),
+        # consider it a duplicate and update the existing row.
+        try:
+            existing = None
+            incoming_uuid = mq_kwargs.get('uuid')
+            if incoming_uuid:
+                existing = MQSensorData.query.filter_by(uuid=incoming_uuid).first()
+
+            # If no uuid match, try timestamp + sensor-values heuristic
+            if existing is None and mq_kwargs.get('timestamp') is not None:
+                try:
+                    ts = mq_kwargs.get('timestamp')
+                    # look for exact timestamp matches
+                    existing = MQSensorData.query.filter(MQSensorData.timestamp == ts).first()
+                except Exception:
+                    existing = None
+
+            if existing:
+                # Update fields on the existing record with incoming non-null values
+                for k, v in mq_kwargs.items():
+                    if v is not None:
+                        # map keys that might differ between DB column names and payload keys
+                        try:
+                            setattr(existing, k, v)
+                        except Exception:
+                            pass
+                db.session.add(existing)
+                # use safe commit to reduce chance of 'database is locked' failures
+                safe_commit(db.session)
+                try:
+                    app.logger.info('ingest updated existing mq row id=%s uuid=%s', existing.id, getattr(existing, 'uuid', None))
+                except Exception:
+                    pass
+                return jsonify({"status": "success", "message": "Existing record updated", "uuid": getattr(existing, 'uuid', None)}), 200
+
+        except Exception:
+            # Fall back to inserting if anything goes wrong with dedupe logic
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
+        # Insert a new MQ record when no duplicate found / dedupe failed
         new_mq_data = MQSensorData(**mq_kwargs)
         db.session.add(new_mq_data)
-
-        db.session.commit()
-
+        safe_commit(db.session)
         try:
-            app.logger.info('ingest saved mq row uuid=%s', mq_kwargs.get('uuid'))
+            app.logger.info('ingest saved mq row uuid=%s id=%s', mq_kwargs.get('uuid'), new_mq_data.id)
         except Exception:
             pass
-        return jsonify({"status": "success", "message": "Data saved"}), 200
+        return jsonify({"status": "success", "message": "Data saved", "uuid": mq_kwargs.get('uuid')}), 200
     except Exception as e:
         print("Error:", str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -565,6 +713,42 @@ def get_data():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/admin/mq-ingest', methods=['GET'])
+def admin_mq_ingest():
+    """Return recent lines from the ingest log.
+
+    This endpoint exposes the last N lines from `instance/mq_ingest.log` for
+    debugging. It intentionally does not require a token in local/dev setups.
+    If you later want to re-enable authentication, reintroduce an env var
+    check here.
+    """
+
+    try:
+        count = int(request.args.get('count', 100))
+    except Exception:
+        count = 100
+    count = max(1, min(1000, count))
+
+    log_path = os.path.join(os.path.dirname(__file__), 'instance', 'mq_ingest.log')
+    if not os.path.exists(log_path):
+        return jsonify({'entries': []})
+
+    entries = []
+    try:
+        with open(log_path, 'r', encoding='utf-8') as lf:
+            lines = lf.readlines()[-count:]
+        for l in lines:
+            l = l.strip('\n')
+            try:
+                entries.append(json.loads(l))
+            except Exception:
+                entries.append({'raw': l})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'failed reading log: {e}'}), 500
+
+    return jsonify({'entries': entries})
+
+
 
 @app.route("/")
 def index():
@@ -578,50 +762,83 @@ def mq_data():
 @app.route("/api/mq-data", methods=["GET"])
 def get_mq_data():
     try:
-        # Return recent MQ sensor records ordered by timestamp.
-        # Previously we filtered to only rows where every MQ column was not NULL,
-        # which caused valid partial records to be excluded. Return the latest
-        # rows (limit to a reasonable number) and let the frontend handle
-        # missing values.
-        mq_records = MQSensorData.query.order_by(MQSensorData.timestamp.desc()).limit(200).all()
-        try:
-            app.logger.info('get_mq_data: found %d records', len(mq_records))
-            if len(mq_records) > 0:
-                app.logger.info('get_mq_data first rec timestamp (raw DB)=%r', getattr(mq_records[0], 'timestamp', None))
-        except Exception:
-            pass
+        # Default behaviour: return only the latest MQ record (single object)
+        # to keep payloads small for frequent polling. If the caller passes
+        # `?history=1` the endpoint returns a list of recent records (up to 200)
+        # newest-first to preserve backward compatibility.
+        history = request.args.get('history', '0') in ('1', 'true', 'yes')
 
-        mq_data = [{
-            "uuid": r.uuid if r.uuid is not None else None,
-            "sd_aqi": getattr(r, 'sd_aqi', None),
-            "sd_aqi_level": getattr(r, 'sd_aqi_level', None),
-            "timestamp": to_athens_iso(r.timestamp) if r.timestamp else None,
-            "temperature": r.temperature,
-            "humidity": r.humidity,
-            "LPG": r.lpg,
-            "CO": r.co,
-            "Smoke": r.smoke,
-            "CO_MQ7": r.co_mq7,
-            "CH4": r.ch4,
-            "CO_MQ9": r.co_mq9,
-            "CO2": r.co2,
-            "NH3": r.nh3,
-            "NOx": r.nox,
-            "Alcohol": r.alcohol,
-            "Benzene": r.benzene,
-            "H2": r.h2,
-            "Air": r.air
-        } for r in mq_records]
+        if history:
+            # Return recent MQ sensor records ordered by timestamp (newest first).
+            mq_records = MQSensorData.query.order_by(MQSensorData.timestamp.desc()).limit(200).all()
 
-        try:
-            server_now = datetime.now(timezone.utc).astimezone(_ATHENS_TZ).isoformat()
-        except Exception:
-            server_now = datetime.now(timezone.utc).isoformat()
-        try:
-            app.logger.info('get_mq_data returning server_now=%s first_mq_ts=%s', server_now, mq_data[0]['timestamp'] if mq_data and len(mq_data)>0 else None)
-        except Exception:
-            pass
-        return jsonify({"mq_data": mq_data, "server_now": server_now}), 200
+            mq_data = [{
+                "uuid": r.uuid if r.uuid is not None else None,
+                "sd_aqi": getattr(r, 'sd_aqi', None),
+                "sd_aqi_level": getattr(r, 'sd_aqi_level', None),
+                "timestamp": to_athens_iso(r.timestamp) if r.timestamp else None,
+                "temperature": r.temperature,
+                "humidity": r.humidity,
+                "LPG": r.lpg,
+                "CO": r.co,
+                "Smoke": r.smoke,
+                "CO_MQ7": r.co_mq7,
+                "CH4": r.ch4,
+                "CO_MQ9": r.co_mq9,
+                "CO2": r.co2,
+                "NH3": r.nh3,
+                "NOx": r.nox,
+                "Alcohol": r.alcohol,
+                "Benzene": r.benzene,
+                "H2": r.h2,
+                "Air": r.air
+            } for r in mq_records]
+
+            try:
+                server_now = datetime.now(timezone.utc).astimezone(_ATHENS_TZ).isoformat()
+            except Exception:
+                server_now = datetime.now(timezone.utc).isoformat()
+            try:
+                app.logger.info('get_mq_data: returning %d records; server_now=%s', len(mq_data) if mq_data else 0, server_now)
+            except Exception:
+                pass
+            return jsonify({"mq_data": mq_data, "server_now": server_now}), 200
+        else:
+            # Return only the single latest record (object) to reduce payload.
+            latest = MQSensorData.query.order_by(MQSensorData.timestamp.desc()).first()
+            if latest:
+                mq_data = {
+                    "uuid": latest.uuid if latest.uuid is not None else None,
+                    "sd_aqi": getattr(latest, 'sd_aqi', None),
+                    "sd_aqi_level": getattr(latest, 'sd_aqi_level', None),
+                    "timestamp": to_athens_iso(latest.timestamp) if latest.timestamp else None,
+                    "temperature": latest.temperature,
+                    "humidity": latest.humidity,
+                    "LPG": latest.lpg,
+                    "CO": latest.co,
+                    "Smoke": latest.smoke,
+                    "CO_MQ7": latest.co_mq7,
+                    "CH4": latest.ch4,
+                    "CO_MQ9": latest.co_mq9,
+                    "CO2": latest.co2,
+                    "NH3": latest.nh3,
+                    "NOx": latest.nox,
+                    "Alcohol": latest.alcohol,
+                    "Benzene": latest.benzene,
+                    "H2": latest.h2,
+                    "Air": latest.air
+                }
+            else:
+                mq_data = None
+            try:
+                server_now = datetime.now(timezone.utc).astimezone(_ATHENS_TZ).isoformat()
+            except Exception:
+                server_now = datetime.now(timezone.utc).isoformat()
+            try:
+                app.logger.info('get_mq_data: returning latest record present=%s; server_now=%s', bool(mq_data), server_now)
+            except Exception:
+                pass
+            return jsonify({"mq_data": mq_data, "server_now": server_now}), 200
     except OperationalError as oe:
         # Try running migration + disposing engine/session and retry once
         try:
@@ -813,4 +1030,7 @@ if __name__ == "__main__":
         t = threading.Thread(target=xbee_listener, daemon=True)
         t.start()
 
-    app.run(debug=flask_debug, host="0.0.0.0", port=5000)
+    # Enable threaded mode so concurrent HTTP requests (from the collector flushes
+    # and from browser polling) can be served in parallel. Combined with WAL
+    # and a larger SQLite timeout this reduces 'database is locked' errors.
+    app.run(debug=flask_debug, host="0.0.0.0", port=5000, threaded=True)

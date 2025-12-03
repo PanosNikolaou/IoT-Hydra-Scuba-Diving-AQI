@@ -40,6 +40,9 @@
                 <li class="nav-item d-flex align-items-center">
                     <span id="server-latest-ts" class="nav-link text-light" style="cursor:default">Server: —</span>
                 </li>
+                <li class="nav-item d-flex align-items-center">
+                    <span id="debug-strip" class="nav-link text-warning" style="cursor:default;font-size:0.9rem">Debug: —</span>
+                </li>
             </ul>
         </div>
     </div>
@@ -239,6 +242,15 @@
                                 </div>
                                 <div id="param-checkbox-list" class="d-flex flex-wrap gap-2"></div>
                             </div>
+                        <!-- Last received raw payload (for quick debugging) -->
+                        <div class="mt-3">
+                            <label class="form-label">Last received (raw)</label>
+                            <div class="d-flex mb-1">
+                                <button id="copy-last-mq" class="btn btn-sm btn-outline-secondary me-2">Copy</button>
+                                <small class="text-muted align-self-center">Shown as JSON from <code>/api/mq-data</code></small>
+                            </div>
+                            <pre id="last-mq-recv" style="max-height:140px; overflow:auto; background:#f8f9fa; padding:8px; border-radius:6px; font-family:monospace; white-space:pre-wrap;">(no data)</pre>
+                        </div>
                         </div>
                     </div>
                 </div>

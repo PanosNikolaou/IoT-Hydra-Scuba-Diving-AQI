@@ -145,7 +145,39 @@ async function fetchMqData() {
         const result = await response.json();
 
         // Store result in the global mqData so other controls can use it
-        mqData = result.mq_data || [];
+        // The API may return either a single latest record (object) or an array.
+        // If a single object is returned, merge it into the client's history (`mqData`).
+        try {
+            if (!result || !result.mq_data) {
+                mqData = mqData || [];
+            } else if (Array.isArray(result.mq_data)) {
+                mqData = result.mq_data.slice();
+            } else {
+                // Single object received; merge into existing mqData history
+                const rec = result.mq_data;
+                mqData = mqData || [];
+                // Avoid duplicates by uuid or timestamp
+                let exists = false;
+                if (rec.uuid) {
+                    exists = mqData.some(r => r && r.uuid && r.uuid === rec.uuid);
+                }
+                if (!exists) {
+                    exists = mqData.some(r => r && r.timestamp && r.timestamp === rec.timestamp);
+                }
+                if (exists) {
+                    // replace existing matching entry
+                    mqData = mqData.map(r => ((r && r.uuid && rec.uuid && r.uuid === rec.uuid) || (r && r.timestamp && r.timestamp === rec.timestamp)) ? rec : r);
+                } else {
+                    // append new record
+                    mqData.push(rec);
+                    // cap history to reasonable size
+                    if (mqData.length > 500) mqData = mqData.slice(-500);
+                }
+            }
+        } catch (e) {
+            mqData = result.mq_data || [];
+        }
+        // (debug logging removed)
 
         // Note: render summary after filtering so the "previous" value for deltas is available
         // (use fallback logic below if filter yields no results)
@@ -178,23 +210,68 @@ async function fetchMqData() {
         const fallbackEl = document.getElementById('fallback-hint');
         if (fallbackEl) {
             if (usingFallback) {
-                const latestTs = parseServerTimestamp(mqData[0].timestamp).toLocaleString();
+                // Compute the latest record by timestamp instead of assuming mqData[0]
+                let latestRec = null;
+                if (mqData && mqData.length > 0) {
+                    latestRec = mqData.slice().sort((a, b) => parseServerTimestamp(b.timestamp) - parseServerTimestamp(a.timestamp))[0];
+                }
+                const latestTs = latestRec && latestRec.timestamp ? parseServerTimestamp(latestRec.timestamp).toLocaleString() : '(unknown)';
                 fallbackEl.style.display = 'block';
                 fallbackEl.innerHTML = `<div class="alert alert-warning p-1 m-0">Showing latest available data (latest record: ${latestTs}), which is older than the selected filter.</div>`;
+                // Ensure the visible summary (recorded-at and summary cards) also reflect
+                // the latest available record when we're falling back, so the UI isn't
+                // left showing stale or empty values.
+                try {
+                    if (latestRec) {
+                        const prevRec = null;
+                        renderMqSummary(latestRec, prevRec);
+                    }
+                } catch (e) { console.warn('fallback render summary failed', e); }
             } else {
                 fallbackEl.style.display = 'none';
                 fallbackEl.innerHTML = '';
             }
         }
 
+        // Debug helper: log what the API returned and whether we used a fallback.
+        try {
+            const dbg = { server_now: result && result.server_now, filtered_count: (filteredMqData||[]).length, total_count: (mqData||[]).length, usingFallback };
+            console.debug('fetchMqData result:', dbg);
+            // Also display the debug info in the visible debug strip for users
+            const dbgEl = document.getElementById('debug-strip');
+            if (dbgEl) {
+                const latestRec = (mqData && mqData.length > 0) ? mqData.slice().sort((a,b)=>parseServerTimestamp(b.timestamp)-parseServerTimestamp(a.timestamp))[0] : null;
+                const latestTs = latestRec && latestRec.timestamp ? parseServerTimestamp(latestRec.timestamp).toLocaleString() : '(none)';
+                const serverNow = result && result.server_now ? parseServerTimestamp(result.server_now).toLocaleString() : '(none)';
+                dbgEl.innerText = `Debug: server_now=${serverNow} • latest=${latestTs} • fallback=${usingFallback}`;
+                // Update the visible "last received" raw payload panel for quick debugging
+                try {
+                    updateLastReceivedUI(latestRec, result && result.server_now, usingFallback);
+                } catch (e) { console.debug('updateLastReceivedUI failed', e); }
+            }
+        } catch (e) { console.debug('debug strip update failed', e); }
+
         // Sort usedData newest-first for chart/table/analysis and save for row click lookup
         const sortedFiltered = usedData.slice().sort((a, b) => parseServerTimestamp(b.timestamp) - parseServerTimestamp(a.timestamp));
+        // (debug logging removed)
         lastFilteredData = sortedFiltered.slice();
 
         // Render summary now that we have the sorted dataset (pass previous record for deltas)
         if (sortedFiltered.length > 0) {
             const latest = sortedFiltered[0];
             const prev = sortedFiltered.length > 1 ? sortedFiltered[1] : null;
+            // Notify when new data arrives (server saved to DB)
+            try {
+                if (lastServerTimestamp) {
+                    const lastMs = parseServerTimestamp(lastServerTimestamp) ? parseServerTimestamp(lastServerTimestamp).getTime() : 0;
+                    const latestMs = parseServerTimestamp(latest.timestamp) ? parseServerTimestamp(latest.timestamp).getTime() : 0;
+                    if (latestMs > lastMs) {
+                        showToast(`New data received: ${parseServerTimestamp(latest.timestamp).toLocaleString()}`, 'success');
+                        showToast('Record saved in database', 'info');
+                    }
+                }
+            } catch (e) { /* ignore toast failures */ }
+
             renderMqSummary(latest, prev);
             // Update visible server timestamp indicator and flash if new
                 try {
@@ -567,21 +644,7 @@ function updateMqChart(filteredMqData) {
     });
 
     // Expose the limited data for quick console inspection in the browser
-    try {
-        // Make an array with newest-first ordering for easier debugging (index 0 = latest)
-        window.lastFetchedMqData = limitedData.slice().reverse();
-
-        // Build ISO timestamps array for logging (chronological order)
-        const parsedIso = timestamps.map(t => (t && t.toISOString) ? t.toISOString() : null);
-
-        // Log concise debug info: chronological timestamps, latest 3 newest-first, and dataset summaries
-        console.log('MQ-debug parsed timestamps (chronological):', parsedIso);
-        console.log('MQ-debug latest 3 parsed timestamps (newest-first):', parsedIso.slice(-3).reverse());
-        console.log('MQ-debug chart datasets:', mqChart.data.datasets.map(ds => ds.label));
-        console.log('MQ-debug dataset summary:', mqChart.data.datasets.map(ds => ({ label: ds.label, len: ds.data.length, first: ds.data[0], last: ds.data[ds.data.length-1] })));
-    } catch (e) {
-        console.warn('MQ-debug logging failed', e);
-    }
+    // (debug logging removed)
 
     mqChart.update();
 }
@@ -917,11 +980,11 @@ function showDetails(record) {
 }
 
 
-setInterval(fetchMqData, 1000);
-fetchMqData();
+// Removed immediate polling startup here. Startup and seeding is
+// handled during DOMContentLoaded so we can fetch initial history first.
 
 // Initialize DataTable once DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     try {
         mqDataTable = $('#mq-data-table').DataTable({
             paging: true,
@@ -1001,11 +1064,76 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // Copy last received raw payload to clipboard
+    try {
+        const copyBtn = document.getElementById('copy-last-mq');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', async (e) => {
+                const pre = document.getElementById('last-mq-recv');
+                if (!pre || !pre.innerText || pre.innerText.trim() === '(no data)') {
+                    showToast('No last data to copy', 'warning');
+                    return;
+                }
+                try {
+                    await navigator.clipboard.writeText(pre.innerText);
+                    showToast('Copied last received JSON', 'success');
+                } catch (err) {
+                    // Fallback for older browsers: textarea + execCommand
+                    try {
+                        const ta = document.createElement('textarea');
+                        ta.value = pre.innerText;
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                        showToast('Copied last received JSON', 'success');
+                    } catch (err2) {
+                        showToast('Copy failed', 'danger');
+                    }
+                }
+            });
+        }
+    } catch (e) { /* ignore copy button wiring failures */ }
+
     // build dynamic parameter controls for chart datasets
     try { buildParameterControls(); } catch (e) { console.warn('buildParameterControls error', e); }
 
+    // Seed initial history from /api/mq-data?history=1 so the dashboard
+    // is driven entirely by the same endpoint used for polling.
+    async function seedHistory() {
+        try {
+            const resp = await fetch('/api/mq-data?history=1');
+            const result = await resp.json();
+            if (result && Array.isArray(result.mq_data) && result.mq_data.length > 0) {
+                // Use the array returned by /api/mq-data?history=1 as the canonical history
+                mqData = result.mq_data.slice();
+                // set server-now baseline if provided
+                if (result.server_now) {
+                    lastServerNowIso = result.server_now;
+                    lastServerNowFetchAt = Date.now();
+                }
+                // apply current filter and render UI once
+                const filtered = filterDataByCriteria(mqData);
+                const used = (filtered && filtered.length > 0) ? filtered : (mqData && mqData.length > 0 ? mqData.slice() : []);
+                const sortedFiltered = used.slice().sort((a, b) => parseServerTimestamp(b.timestamp) - parseServerTimestamp(a.timestamp));
+                lastFilteredData = sortedFiltered.slice();
+                if (sortedFiltered.length > 0) {
+                    const latest = sortedFiltered[0];
+                    const prev = sortedFiltered.length > 1 ? sortedFiltered[1] : null;
+                    renderMqSummary(latest, prev);
+                }
+                updateMqChart(sortedFiltered);
+                updateMqDataTable(sortedFiltered);
+                computeAndRenderAnalysis(sortedFiltered);
+            }
+        } catch (e) {
+            console.warn('seedHistory failed', e);
+        }
+    }
+
     // start polling according to initial interval
     pollIntervalInput.value = pollIntervalMs;
+    await seedHistory();
     startPolling();
 
     // Start a lightweight ticker to update the server clock display every second
@@ -1084,6 +1212,63 @@ function computeAndRenderAnalysis(data) {
         `;
         container.appendChild(card);
     });
+}
+
+// Minimal toast helper: floating message that auto dismisses
+function showToast(message, type) {
+    try {
+        const toastId = 'mq-toast-' + Date.now();
+        const el = document.createElement('div');
+        el.id = toastId;
+        el.style.position = 'fixed';
+        el.style.right = '20px';
+        el.style.top = '20px';
+        el.style.zIndex = 2000;
+        el.style.minWidth = '220px';
+        el.style.padding = '10px 14px';
+        el.style.borderRadius = '6px';
+        el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+        el.style.color = '#fff';
+        el.style.fontSize = '13px';
+        el.style.opacity = '0';
+        el.style.transition = 'opacity 240ms ease, transform 240ms ease';
+        if (type === 'success') el.style.background = '#28a745';
+        else if (type === 'danger') el.style.background = '#dc3545';
+        else if (type === 'warning') el.style.background = '#ffc107';
+        else el.style.background = '#007bff';
+        el.innerText = message;
+        document.body.appendChild(el);
+        // animate in
+        requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
+        // auto remove after 4s
+        setTimeout(() => {
+            try { el.style.opacity = '0'; el.style.transform = 'translateY(-6px)'; } catch (e) {}
+            setTimeout(() => { try { document.body.removeChild(el); } catch (e) {} }, 300);
+        }, 4000);
+    } catch (e) { console.warn('showToast error', e); }
+}
+
+// Update the 'Last received (raw)' UI panel with pretty-printed JSON
+function updateLastReceivedUI(latestRec, serverNow, usingFallback) {
+    try {
+        const el = document.getElementById('last-mq-recv');
+        if (!el) return;
+        if (!latestRec) {
+            el.innerText = '(no data)';
+            return;
+        }
+        // Build a small header with server time / fallback hint then pretty JSON
+        const hdr = [];
+        if (serverNow) {
+            try { hdr.push(`server_now: ${parseServerTimestamp(serverNow).toLocaleString()}`); } catch (e) { hdr.push(`server_now: ${String(serverNow)}`); }
+        }
+        if (usingFallback) hdr.push('(using fallback latest)');
+        const headerLine = hdr.length ? hdr.join(' ') + '\n\n' : '';
+        // Pretty-print but tolerate circular structures (unlikely)
+        let body = '';
+        try { body = JSON.stringify(latestRec, null, 2); } catch (e) { body = String(latestRec); }
+        el.innerText = headerLine + body;
+    } catch (e) { console.debug('updateLastReceivedUI error', e); }
 }
 
 // -------------------------
